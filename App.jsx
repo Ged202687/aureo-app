@@ -127,6 +127,14 @@ function fmtCountdown(ms) {
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
 }
+function fmtDuration(totalSeconds) {
+  const s = Math.max(0, Math.round(totalSeconds || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+function hoursDecimal(totalSeconds) {
+  return Math.round(((totalSeconds || 0) / 3600) * 100) / 100;
+}
 
 /* ---------------------------------- app racine ---------------------------------- */
 
@@ -434,12 +442,14 @@ function Workspace({ session, onLogout, onProfilChange }) {
                   <NavItem icon={LayoutDashboard} label="Tableau de bord" active={adminTab === "dashboard"} onClick={() => setAdminTab("dashboard")} />
                   <NavItem icon={Users} label="File d'attente" active={adminTab === "queue"} onClick={() => setAdminTab("queue")} />
                   <NavItem icon={Search} label="Recherche" active={adminTab === "recherche"} onClick={() => setAdminTab("recherche")} />
+                  <NavItem icon={Timer} label="Présence" active={adminTab === "presence"} onClick={() => setAdminTab("presence")} />
                 </>
               ) : (
                 <>
                   <NavItem icon={LayoutDashboard} label="Tableau de bord" active={adminTab === "dashboard"} onClick={() => setAdminTab("dashboard")} />
                   <NavItem icon={Users} label="File d'attente" active={adminTab === "queue"} onClick={() => setAdminTab("queue")} />
                   <NavItem icon={Search} label="Recherche" active={adminTab === "recherche"} onClick={() => setAdminTab("recherche")} />
+                  <NavItem icon={Timer} label="Présence" active={adminTab === "presence"} onClick={() => setAdminTab("presence")} />
                   <NavItem icon={Upload} label="Import" active={adminTab === "import"} onClick={() => setAdminTab("import")} />
                   <NavItem icon={Megaphone} label="Campagnes" active={adminTab === "campagnes"} onClick={() => setAdminTab("campagnes")} />
                   <NavItem icon={UserCircle2} label="Utilisateurs" active={adminTab === "utilisateurs"} onClick={() => setAdminTab("utilisateurs")} />
@@ -501,12 +511,14 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "dashboard" && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} />}
               {adminTab === "queue" && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && <SearchPanel accessToken={accessToken} tree={tree} />}
+              {adminTab === "presence" && <PresencePanel accessToken={accessToken} />}
             </>
           ) : (
             <>
               {adminTab === "dashboard" && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} />}
               {adminTab === "queue" && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && <SearchPanel accessToken={accessToken} tree={tree} />}
+              {adminTab === "presence" && <PresencePanel accessToken={accessToken} />}
               {adminTab === "import" && <ImportPanel accessToken={accessToken} bump={bump} />}
               {adminTab === "campagnes" && <CampaignsPanel accessToken={accessToken} />}
               {adminTab === "utilisateurs" && <UsersPanel accessToken={accessToken} />}
@@ -1072,6 +1084,155 @@ function Dashboard({ accessToken, refreshFlag }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------------- admin/superviseur : présence ---------------------------------- */
+
+function PresencePanel({ accessToken }) {
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [exporting, setExporting] = useState(false);
+
+  const load = useCallback(async () => {
+    setRows(null); setError(null);
+    try {
+      const [profils, temps] = await Promise.all([
+        supaRest("profils?select=id,nom,role,matricule&role=in.(agent,superviseur)&order=nom.asc", { accessToken }),
+        supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${date}`, { accessToken }),
+      ]);
+      const parAgent = profils.map((p) => {
+        const lignes = temps.filter((t) => t.agent_id === p.id);
+        const enProd = lignes.find((l) => l.statut === "en_prod")?.secondes || 0;
+        const enPause = lignes.find((l) => l.statut === "en_pause")?.secondes || 0;
+        const presenceBrute = enProd + enPause;
+        const occupation = presenceBrute > 0 ? enProd / presenceBrute : null;
+        return { ...p, enProd, enPause, presenceBrute, occupation };
+      }).filter((a) => a.presenceBrute > 0);
+      parAgent.sort((a, b) => b.presenceBrute - a.presenceBrute);
+      setRows(parAgent);
+    } catch (e) { setError(e.message); }
+  }, [accessToken, date]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function exportExcel() {
+    setExporting(true);
+    try {
+      const data = rows.map((a) => ({
+        Matricule: a.matricule,
+        Agent: a.nom,
+        Rôle: a.role,
+        "Temps production": fmtDuration(a.enProd),
+        "Temps production (h)": hoursDecimal(a.enProd),
+        "Temps pause": fmtDuration(a.enPause),
+        "Temps pause (h)": hoursDecimal(a.enPause),
+        "Présence brute": fmtDuration(a.presenceBrute),
+        "Présence brute (h)": hoursDecimal(a.presenceBrute),
+        "Taux d'occupation (%)": a.occupation === null ? "" : Math.round(a.occupation * 100),
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Présence");
+      XLSX.writeFile(wb, `aureo_presence_${date}.xlsx`);
+    } finally { setExporting(false); }
+  }
+
+  const totaux = rows ? rows.reduce((acc, a) => ({
+    enProd: acc.enProd + a.enProd, enPause: acc.enPause + a.enPause,
+  }), { enProd: 0, enPause: 0 }) : null;
+  const occupationMoyenne = totaux && (totaux.enProd + totaux.enPause) > 0
+    ? totaux.enProd / (totaux.enProd + totaux.enPause) : null;
+
+  function occupationColor(o) {
+    if (o === null) return C.mutedSoft;
+    if (o >= 0.8) return C.green;
+    if (o >= 0.5) return C.amber;
+    return C.red;
+  }
+
+  return (
+    <div>
+      <header className="mb-6 flex items-end justify-between">
+        <div>
+          <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Présence</h1>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, temps de pause et taux d'occupation par agent.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+          <button onClick={exportExcel} disabled={!rows || rows.length === 0 || exporting}
+            style={{ display: "flex", alignItems: "center", gap: 6, background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
+            {exporting ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />} Exporter Excel
+          </button>
+        </div>
+      </header>
+
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+
+      {rows === null ? (
+        <CenterLoader />
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 24 }}>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
+              <Users size={16} color={C.ink} />
+              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{rows.length}</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Agents actifs ce jour</div>
+            </div>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
+              <PlayCircle size={16} color={C.green} />
+              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{hoursDecimal(totaux.enProd)} h</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Temps de production cumulé</div>
+            </div>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
+              <PauseCircle size={16} color={C.amber} />
+              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{hoursDecimal(totaux.enPause)} h</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Temps de pause cumulé</div>
+            </div>
+            <div style={{ background: C.ink, borderRadius: 12, padding: 18 }}>
+              <CircleDot size={16} color={occupationColor(occupationMoyenne)} />
+              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10, color: "#fff" }}>
+                {occupationMoyenne === null ? "—" : `${Math.round(occupationMoyenne * 100)}%`}
+              </div>
+              <div style={{ fontSize: 12, color: "#8B93A3", marginTop: 2 }}>Taux d'occupation moyen</div>
+            </div>
+          </div>
+
+          {rows.length === 0 ? (
+            <p style={{ fontSize: 13, color: C.muted }}>Aucune activité enregistrée pour cette journée.</p>
+          ) : (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                <thead>
+                  <tr style={{ background: C.canvas, textAlign: "left" }}>
+                    {["Agent", "Rôle", "Production", "Pause", "Occupation"].map((h) => (
+                      <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((a) => (
+                    <tr key={a.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                      <td style={{ padding: "10px 16px", fontWeight: 500 }}>{a.nom}</td>
+                      <td style={{ padding: "10px 16px", textTransform: "capitalize", color: C.muted }}>{a.role}</td>
+                      <td className="mono" style={{ padding: "10px 16px" }}>{fmtDuration(a.enProd)}</td>
+                      <td className="mono" style={{ padding: "10px 16px", color: C.muted }}>{fmtDuration(a.enPause)}</td>
+                      <td style={{ padding: "10px 16px" }}>
+                        <span style={{ background: `${occupationColor(a.occupation)}22`, color: occupationColor(a.occupation), padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
+                          {a.occupation === null ? "—" : `${Math.round(a.occupation * 100)}%`}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
