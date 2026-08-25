@@ -109,18 +109,23 @@ function pickField(row, candidates) {
   for (const cand of candidates) { const hit = keys.find((k) => normKey(k).includes(cand)); if (hit) return row[hit]; }
   return "";
 }
+function pickFieldStr(row, candidates) {
+  const v = pickField(row, candidates);
+  return v === null || v === undefined || String(v).trim() === "" ? null : String(v).trim();
+}
 function rowsToClients(rows, lotId) {
   return rows
     .filter((r) => Object.values(r).some((v) => String(v || "").trim() !== ""))
     .map((r) => ({
-      nom: String(pickField(r, ["nom", "name", "client", "nomclient", "fullname"]) || "Sans nom"),
-      entreprise: String(pickField(r, ["entreprise", "societe", "company", "organisation"]) || null),
-      telephone: String(pickField(r, ["tel", "telephone", "phone", "mobile", "numero", "contact1", "numerocontact1"]) || null),
-      numero_mtn: String(pickField(r, ["numeromtn", "mtn", "numeromobilemoneymtn"]) || null),
-      segment: String(pickField(r, ["segment", "typesegment", "typedesegment"]) || null),
-      commune: String(pickField(r, ["commune", "ville", "quartier"]) || null),
-      email: String(pickField(r, ["email", "mail", "courriel"]) || null),
-      note: String(pickField(r, ["note", "notes", "commentaire", "remarque"]) || null),
+      numero_fiche: pickFieldStr(r, ["numerobox", "numerodebox", "box", "numerofiche", "numerodefiche"]),
+      nom: pickFieldStr(r, ["nom", "name", "client", "nomclient", "fullname"]) || "Sans nom",
+      entreprise: pickFieldStr(r, ["entreprise", "societe", "company", "organisation"]),
+      telephone: pickFieldStr(r, ["tel", "telephone", "phone", "mobile", "contact1", "numerocontact1"]),
+      numero_mtn: pickFieldStr(r, ["numeromtn", "mtn", "numeromobilemoneymtn"]),
+      segment: pickFieldStr(r, ["segment", "typesegment", "typedesegment"]),
+      commune: pickFieldStr(r, ["commune", "ville", "quartier"]),
+      email: pickFieldStr(r, ["email", "mail", "courriel"]),
+      note: pickFieldStr(r, ["note", "notes", "commentaire", "remarque"]),
       lot_id: lotId || null,
     }));
 }
@@ -1607,7 +1612,7 @@ function ImportPanel({ accessToken, bump }) {
   const cibleOptions = newLotCibleType === "agent" ? (agents || []) : (groupes || []);
 
   function downloadTemplate() {
-    const headers = ["Nom", "Numéro de contact 1", "Numéro MTN", "Type de segment", "Commune", "Email", "Note"];
+    const headers = ["Numéro de box", "Nom", "Numéro de contact 1", "Numéro MTN", "Type de segment", "Commune", "Email", "Note"];
     const ws = XLSX.utils.aoa_to_sheet([headers]);
     ws["!cols"] = headers.map(() => ({ wch: 22 }));
     const wb = XLSX.utils.book_new();
@@ -1621,7 +1626,7 @@ function ImportPanel({ accessToken, bump }) {
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Import de fiches</h1>
           <p style={{ fontSize: 13, color: C.muted, marginTop: 3, maxWidth: 560 }}>
-            Colonnes reconnues automatiquement : nom, contact 1, numéro MTN, segment, commune, email, note.
+            Colonnes reconnues automatiquement : numéro de box, nom, contact 1, numéro MTN, segment, commune, email, note.
             Chaque import constitue un <strong>lot</strong>, rattaché à une campagne et attribué à un agent ou un groupe.
           </p>
         </div>
