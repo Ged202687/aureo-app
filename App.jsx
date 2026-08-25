@@ -1258,12 +1258,13 @@ function PresencePanel({ accessToken }) {
         supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${date}`, { accessToken }),
         supaRest("pause_types?select=*&order=ordre.asc", { accessToken }),
         supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}`, { accessToken }),
-        supaRest(`statuts_historique?select=agent_id,debut&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}&order=debut.asc`, { accessToken }),
+        supaRest(`statuts_historique?select=agent_id,statut,debut&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}&order=debut.asc`, { accessToken }),
       ]);
       setPauseTypesList(pauseTypes);
       const now = Date.now();
       const connexionParAgent = {};
       for (const h of historique) {
+        if (h.statut === "deconnecte") continue; // pas une connexion, on ignore
         if (!connexionParAgent[h.agent_id]) connexionParAgent[h.agent_id] = h.debut;
       }
 
