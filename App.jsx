@@ -165,7 +165,10 @@ export default function App() {
   }
 
   async function handleLogout() {
-    if (session) { try { await rpc("set_my_status", session.accessToken, { p_statut: "deconnecte" }); } catch {} }
+    if (session) {
+      try { await supaRest(`pause_details?agent_id=eq.${session.user.id}&fin=is.null`, { method: "PATCH", accessToken: session.accessToken, body: { fin: new Date().toISOString() } }); } catch {}
+      try { await rpc("set_my_status", session.accessToken, { p_statut: "deconnecte" }); } catch {}
+    }
     setSession(null);
   }
 
@@ -363,13 +366,39 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const [tree, setTree] = useState([]);
   const elapsed = useElapsed(connectedAt);
   const [statutBusy, setStatutBusy] = useState(false);
+  const [pauseTypes, setPauseTypes] = useState([]);
+  const [showPauseMenu, setShowPauseMenu] = useState(false);
+  const [currentPauseTypeId, setCurrentPauseTypeId] = useState(null);
 
-  async function changeStatut(statut) {
+  useEffect(() => {
+    (async () => {
+      try {
+        const pts = await supaRest("pause_types?select=*&actif=eq.true&order=ordre.asc", { accessToken });
+        setPauseTypes(pts);
+      } catch {}
+      try {
+        const open = await supaRest(`pause_details?select=pause_type_id&agent_id=eq.${session.user.id}&fin=is.null&order=debut.desc&limit=1`, { accessToken });
+        if (open[0]) setCurrentPauseTypeId(open[0].pause_type_id);
+      } catch {}
+    })();
+  }, [accessToken]); // eslint-disable-line
+
+  async function changeStatut(statut, pauseTypeId = null) {
     setStatutBusy(true);
     try {
       const p = await rpc("set_my_status", accessToken, { p_statut: statut });
       onProfilChange(p);
-    } catch {} finally { setStatutBusy(false); }
+      if (statut === "en_pause") {
+        if (currentPauseTypeId) {
+          try { await supaRest(`pause_details?agent_id=eq.${session.user.id}&fin=is.null`, { method: "PATCH", accessToken, body: { fin: new Date().toISOString() } }); } catch {}
+        }
+        try { await supaRest("pause_details", { method: "POST", accessToken, body: { agent_id: session.user.id, pause_type_id: pauseTypeId } }); } catch {}
+        setCurrentPauseTypeId(pauseTypeId);
+      } else if (currentPauseTypeId) {
+        try { await supaRest(`pause_details?agent_id=eq.${session.user.id}&fin=is.null`, { method: "PATCH", accessToken, body: { fin: new Date().toISOString() } }); } catch {}
+        setCurrentPauseTypeId(null);
+      }
+    } catch {} finally { setStatutBusy(false); setShowPauseMenu(false); }
   }
   const [treeLoading, setTreeLoading] = useState(true);
   const [treeError, setTreeError] = useState(null);
@@ -477,20 +506,39 @@ function Workspace({ session, onLogout, onProfilChange }) {
               <Timer size={12} /> {elapsed}
             </div>
 
-            <div style={{ background: C.inkSoft, borderRadius: 9, padding: 4 }} className="flex gap-1 mb-3">
-              {AGENT_STATUTS.map((st) => {
-                const Icon = st.icon;
-                const active = profil?.statut === st.id;
-                return (
-                  <button key={st.id} disabled={statutBusy} onClick={() => changeStatut(st.id)} title={st.label}
-                    style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "none", background: active ? st.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Icon size={14} color={active ? C.ink : "#8B93A3"} />
-                  </button>
-                );
-              })}
+            <div style={{ position: "relative" }}>
+              <div style={{ background: C.inkSoft, borderRadius: 9, padding: 4 }} className="flex gap-1 mb-3">
+                {AGENT_STATUTS.map((st) => {
+                  const Icon = st.icon;
+                  const active = profil?.statut === st.id;
+                  return (
+                    <button key={st.id} disabled={statutBusy} title={st.label}
+                      onClick={() => { st.id === "en_pause" ? setShowPauseMenu((v) => !v) : (setShowPauseMenu(false), changeStatut(st.id)); }}
+                      style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "none", background: active ? st.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <Icon size={14} color={active ? C.ink : "#8B93A3"} />
+                    </button>
+                  );
+                })}
+              </div>
+
+              {showPauseMenu && (
+                <div style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 5, boxShadow: "0 12px 30px rgba(0,0,0,0.3)", zIndex: 30 }}>
+                  {pauseTypes.length === 0 ? (
+                    <div style={{ padding: "8px 9px", fontSize: 11.5, color: C.mutedSoft }}>Aucun type de pause configuré.</div>
+                  ) : pauseTypes.map((pt) => (
+                    <button key={pt.id} onClick={() => changeStatut("en_pause", pt.id)}
+                      style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8, padding: "7px 9px", borderRadius: 6, border: "none", background: currentPauseTypeId === pt.id && profil?.statut === "en_pause" ? C.canvas : "transparent", fontSize: 12, fontWeight: 500, color: C.text }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: pt.couleur, flexShrink: 0 }} />
+                      {pt.nom}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div style={{ fontSize: 10, color: "#8B93A3", textAlign: "center", marginBottom: 10 }}>
-              {AGENT_STATUTS.find((s) => s.id === profil?.statut)?.label || "—"}
+              {profil?.statut === "en_pause" && currentPauseTypeId
+                ? (pauseTypes.find((pt) => pt.id === currentPauseTypeId)?.nom || "Pause")
+                : (AGENT_STATUTS.find((s) => s.id === profil?.statut)?.label || "—")}
             </div>
 
             <button onClick={onLogout} className="flex items-center gap-1.5" style={{ background: "none", border: "none", color: "#8B93A3", fontSize: 11.5 }}>
@@ -568,6 +616,44 @@ function AgentView({ accessToken, tree, bump, agentId }) {
   const [error, setError] = useState(null);
   const [lastQualif, setLastQualif] = useState(null);
   const [stats, setStats] = useState({ fiches: 0, rappels: 0 });
+  const [myPresence, setMyPresence] = useState(null);
+
+  const loadMyPresence = useCallback(async () => {
+    try {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const startOfDay = new Date(todayStr + "T00:00:00");
+      const [tempsRows, pauseTypes, pauseDetails] = await Promise.all([
+        supaRest(`vue_temps_agent_jour?select=statut,secondes&agent_id=eq.${agentId}&jour=eq.${todayStr}`, { accessToken }),
+        supaRest("pause_types?select=*&actif=eq.true&order=ordre.asc", { accessToken }),
+        supaRest(`pause_details?select=pause_type_id,debut,fin&agent_id=eq.${agentId}&debut=gte.${startOfDay.toISOString()}`, { accessToken }),
+      ]);
+      const enProd = tempsRows.find((t) => t.statut === "en_prod")?.secondes || 0;
+      const now = Date.now();
+      const byType = {};
+      for (const d of pauseDetails) {
+        const pt = pauseTypes.find((t) => t.id === d.pause_type_id);
+        if (!pt) continue;
+        const finMs = d.fin ? new Date(d.fin).getTime() : now;
+        const seconds = Math.max(0, (finMs - new Date(d.debut).getTime()) / 1000);
+        if (!byType[pt.code]) byType[pt.code] = { ...pt, seconds: 0, occurrences: 0 };
+        byType[pt.code].seconds += seconds;
+        byType[pt.code].occurrences += 1;
+      }
+      let presenceBrute = enProd, occupationImpact = 0;
+      Object.values(byType).forEach((t) => {
+        if (t.compte_presence) presenceBrute += t.seconds;
+        if (t.compte_occupation) occupationImpact += t.seconds;
+      });
+      const occupation = (enProd + occupationImpact) > 0 ? enProd / (enProd + occupationImpact) : null;
+      setMyPresence({ enProd, byType, presenceBrute, occupation, pauseTypesOrder: pauseTypes.map((t) => t.code) });
+    } catch {}
+  }, [accessToken, agentId]);
+
+  useEffect(() => {
+    loadMyPresence();
+    const t = setInterval(loadMyPresence, 30000);
+    return () => clearInterval(t);
+  }, [loadMyPresence]);
 
   const loadStats = useCallback(async () => {
     try {
@@ -654,6 +740,36 @@ function AgentView({ accessToken, tree, bump, agentId }) {
           )}
         </div>
       </header>
+
+      {view === "poste" && myPresence && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", gap: 26, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>Production (jour)</div>
+            <div className="mono" style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{fmtDuration(myPresence.enProd)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>Occupation</div>
+            <div className="mono" style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: myPresence.occupation === null ? C.mutedSoft : myPresence.occupation >= 0.8 ? C.green : myPresence.occupation >= 0.5 ? C.amber : C.red }}>
+              {myPresence.occupation === null ? "—" : `${Math.round(myPresence.occupation * 100)}%`}
+            </div>
+          </div>
+          <div style={{ width: 1, height: 30, background: C.borderSoft }} />
+          {(myPresence.pauseTypesOrder || []).map((code) => {
+            const t = myPresence.byType[code];
+            const seconds = t?.seconds || 0;
+            const capMin = t?.duree_max_minutes && t?.occurrences_max_jour ? t.duree_max_minutes * t.occurrences_max_jour : null;
+            const overCap = capMin && seconds / 60 > capMin;
+            return (
+              <div key={code}>
+                <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>{t?.nom || code}</div>
+                <div className="mono" style={{ fontSize: 14, fontWeight: 600, marginTop: 2, color: overCap ? C.red : C.text }}>
+                  {fmtDuration(seconds)}{capMin ? ` / ${capMin}m` : ""}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {view === "recherche" ? (
         <AgentSearch accessToken={accessToken} />
@@ -1093,24 +1209,45 @@ function Dashboard({ accessToken, refreshFlag }) {
 function PresencePanel({ accessToken }) {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [rows, setRows] = useState(null);
+  const [pauseTypesList, setPauseTypesList] = useState([]);
   const [error, setError] = useState(null);
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setRows(null); setError(null);
     try {
-      const [profils, temps] = await Promise.all([
+      const startOfDay = new Date(date + "T00:00:00");
+      const endOfDay = new Date(startOfDay.getTime() + 24 * 3600 * 1000);
+      const [profils, temps, pauseTypes, pauseDetails] = await Promise.all([
         supaRest("profils?select=id,nom,role,matricule&role=in.(agent,superviseur)&order=nom.asc", { accessToken }),
         supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${date}`, { accessToken }),
+        supaRest("pause_types?select=*&order=ordre.asc", { accessToken }),
+        supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}`, { accessToken }),
       ]);
+      setPauseTypesList(pauseTypes);
+      const now = Date.now();
+
       const parAgent = profils.map((p) => {
-        const lignes = temps.filter((t) => t.agent_id === p.id);
-        const enProd = lignes.find((l) => l.statut === "en_prod")?.secondes || 0;
-        const enPause = lignes.find((l) => l.statut === "en_pause")?.secondes || 0;
-        const presenceBrute = enProd + enPause;
-        const occupation = presenceBrute > 0 ? enProd / presenceBrute : null;
-        return { ...p, enProd, enPause, presenceBrute, occupation };
-      }).filter((a) => a.presenceBrute > 0);
+        const enProd = temps.find((t) => t.agent_id === p.id && t.statut === "en_prod")?.secondes || 0;
+        const details = pauseDetails.filter((d) => d.agent_id === p.id);
+        const byType = {};
+        for (const d of details) {
+          const pt = pauseTypes.find((t) => t.id === d.pause_type_id);
+          if (!pt) continue;
+          const finMs = d.fin ? new Date(d.fin).getTime() : now;
+          const seconds = Math.max(0, (finMs - new Date(d.debut).getTime()) / 1000);
+          if (!byType[pt.code]) byType[pt.code] = { ...pt, seconds: 0 };
+          byType[pt.code].seconds += seconds;
+        }
+        let presenceBrute = enProd, occupationImpact = 0;
+        Object.values(byType).forEach((t) => {
+          if (t.compte_presence) presenceBrute += t.seconds;
+          if (t.compte_occupation) occupationImpact += t.seconds;
+        });
+        const occupation = (enProd + occupationImpact) > 0 ? enProd / (enProd + occupationImpact) : null;
+        return { ...p, enProd, byType, presenceBrute, occupation };
+      }).filter((a) => a.presenceBrute > 0 || Object.keys(a.byType).length > 0);
+
       parAgent.sort((a, b) => b.presenceBrute - a.presenceBrute);
       setRows(parAgent);
     } catch (e) { setError(e.message); }
@@ -1121,18 +1258,24 @@ function PresencePanel({ accessToken }) {
   function exportExcel() {
     setExporting(true);
     try {
-      const data = rows.map((a) => ({
-        Matricule: a.matricule,
-        Agent: a.nom,
-        Rôle: a.role,
-        "Temps production": fmtDuration(a.enProd),
-        "Temps production (h)": hoursDecimal(a.enProd),
-        "Temps pause": fmtDuration(a.enPause),
-        "Temps pause (h)": hoursDecimal(a.enPause),
-        "Présence brute": fmtDuration(a.presenceBrute),
-        "Présence brute (h)": hoursDecimal(a.presenceBrute),
-        "Taux d'occupation (%)": a.occupation === null ? "" : Math.round(a.occupation * 100),
-      }));
+      const data = rows.map((a) => {
+        const row = {
+          Matricule: a.matricule,
+          Agent: a.nom,
+          Rôle: a.role,
+          "Temps production": fmtDuration(a.enProd),
+          "Temps production (h)": hoursDecimal(a.enProd),
+        };
+        pauseTypesList.forEach((pt) => {
+          const seconds = a.byType[pt.code]?.seconds || 0;
+          row[pt.nom] = fmtDuration(seconds);
+          row[`${pt.nom} (h)`] = hoursDecimal(seconds);
+        });
+        row["Présence brute (hors pause déjeuner)"] = fmtDuration(a.presenceBrute);
+        row["Présence brute (h)"] = hoursDecimal(a.presenceBrute);
+        row["Taux d'occupation (%)"] = a.occupation === null ? "" : Math.round(a.occupation * 100);
+        return row;
+      });
       const ws = XLSX.utils.json_to_sheet(data);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Présence");
@@ -1140,11 +1283,16 @@ function PresencePanel({ accessToken }) {
     } finally { setExporting(false); }
   }
 
-  const totaux = rows ? rows.reduce((acc, a) => ({
-    enProd: acc.enProd + a.enProd, enPause: acc.enPause + a.enPause,
-  }), { enProd: 0, enPause: 0 }) : null;
-  const occupationMoyenne = totaux && (totaux.enProd + totaux.enPause) > 0
-    ? totaux.enProd / (totaux.enProd + totaux.enPause) : null;
+  const totaux = rows ? rows.reduce((acc, a) => {
+    acc.enProd += a.enProd;
+    pauseTypesList.forEach((pt) => { acc.byType[pt.code] = (acc.byType[pt.code] || 0) + (a.byType[pt.code]?.seconds || 0); });
+    acc.occupationImpact += Object.values(a.byType).reduce((s, t) => s + (t.compte_occupation ? t.seconds : 0), 0);
+    return acc;
+  }, { enProd: 0, byType: {}, occupationImpact: 0 }) : null;
+
+  const occupationMoyenne = totaux && (totaux.enProd + totaux.occupationImpact) > 0
+    ? totaux.enProd / (totaux.enProd + totaux.occupationImpact) : null;
+  const totalPause = totaux ? Object.values(totaux.byType).reduce((s, v) => s + v, 0) : 0;
 
   function occupationColor(o) {
     if (o === null) return C.mutedSoft;
@@ -1158,7 +1306,7 @@ function PresencePanel({ accessToken }) {
       <header className="mb-6 flex items-end justify-between">
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Présence</h1>
-          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, temps de pause et taux d'occupation par agent.</p>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, pauses par type et taux d'occupation par agent.</p>
         </div>
         <div className="flex items-center gap-2">
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
@@ -1189,8 +1337,8 @@ function PresencePanel({ accessToken }) {
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
               <PauseCircle size={16} color={C.amber} />
-              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{hoursDecimal(totaux.enPause)} h</div>
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Temps de pause cumulé</div>
+              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{hoursDecimal(totalPause)} h</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Toutes pauses cumulées</div>
             </div>
             <div style={{ background: C.ink, borderRadius: 12, padding: 18 }}>
               <CircleDot size={16} color={occupationColor(occupationMoyenne)} />
@@ -1204,22 +1352,32 @@ function PresencePanel({ accessToken }) {
           {rows.length === 0 ? (
             <p style={{ fontSize: 13, color: C.muted }}>Aucune activité enregistrée pour cette journée.</p>
           ) : (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead>
                   <tr style={{ background: C.canvas, textAlign: "left" }}>
-                    {["Agent", "Rôle", "Production", "Pause", "Occupation"].map((h) => (
-                      <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase" }}>{h}</th>
+                    {["Agent", "Rôle", "Production", ...pauseTypesList.map((pt) => pt.nom), "Occupation"].map((h) => (
+                      <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((a) => (
                     <tr key={a.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
-                      <td style={{ padding: "10px 16px", fontWeight: 500 }}>{a.nom}</td>
+                      <td style={{ padding: "10px 16px", fontWeight: 500, whiteSpace: "nowrap" }}>{a.nom}</td>
                       <td style={{ padding: "10px 16px", textTransform: "capitalize", color: C.muted }}>{a.role}</td>
-                      <td className="mono" style={{ padding: "10px 16px" }}>{fmtDuration(a.enProd)}</td>
-                      <td className="mono" style={{ padding: "10px 16px", color: C.muted }}>{fmtDuration(a.enPause)}</td>
+                      <td className="mono" style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>{fmtDuration(a.enProd)}</td>
+                      {pauseTypesList.map((pt) => {
+                        const t = a.byType[pt.code];
+                        const seconds = t?.seconds || 0;
+                        const capMin = pt.duree_max_minutes && pt.occurrences_max_jour ? pt.duree_max_minutes * pt.occurrences_max_jour : null;
+                        const overCap = capMin && seconds / 60 > capMin;
+                        return (
+                          <td key={pt.code} className="mono" style={{ padding: "10px 16px", color: overCap ? C.red : C.muted, fontWeight: overCap ? 700 : 400, whiteSpace: "nowrap" }}>
+                            {seconds > 0 ? fmtDuration(seconds) : "—"}
+                          </td>
+                        );
+                      })}
                       <td style={{ padding: "10px 16px" }}>
                         <span style={{ background: `${occupationColor(a.occupation)}22`, color: occupationColor(a.occupation), padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
                           {a.occupation === null ? "—" : `${Math.round(a.occupation * 100)}%`}
@@ -1231,11 +1389,15 @@ function PresencePanel({ accessToken }) {
               </table>
             </div>
           )}
+          <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 10 }}>
+            La pause déjeuner n'est pas incluse dans la présence brute ni dans le taux d'occupation, mais reste visible ci-dessus et dans l'export.
+          </p>
         </>
       )}
     </div>
   );
 }
+
 
 /* ---------------------------------- admin : file d'attente ---------------------------------- */
 
