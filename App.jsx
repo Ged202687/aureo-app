@@ -96,7 +96,13 @@ const STATUS_META = {
   archive: { label: "Archivée", color: C.muted, soft: C.borderSoft, icon: Archive },
 };
 
-function normKey(s) { return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim(); }
+function normKey(s) {
+  return String(s || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "") // retire espaces, tirets, apostrophes, parenthèses… tout sauf lettres/chiffres
+    .trim();
+}
 function pickField(row, candidates) {
   const keys = Object.keys(row);
   for (const cand of candidates) { const hit = keys.find((k) => normKey(k) === cand); if (hit) return row[hit]; }
@@ -1600,14 +1606,29 @@ function ImportPanel({ accessToken, bump }) {
 
   const cibleOptions = newLotCibleType === "agent" ? (agents || []) : (groupes || []);
 
+  function downloadTemplate() {
+    const headers = ["Nom", "Numéro de contact 1", "Numéro MTN", "Type de segment", "Commune", "Email", "Note"];
+    const ws = XLSX.utils.aoa_to_sheet([headers]);
+    ws["!cols"] = headers.map(() => ({ wch: 22 }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Fiches");
+    XLSX.writeFile(wb, "aureo_modele_import.xlsx");
+  }
+
   return (
     <div>
-      <header className="mb-6">
-        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Import de fiches</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
-          Colonnes reconnues automatiquement : nom, contact 1, numéro MTN, segment, commune, email, note.
-          Chaque import constitue un <strong>lot</strong>, rattaché à une campagne et attribué à un agent ou un groupe.
-        </p>
+      <header className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Import de fiches</h1>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3, maxWidth: 560 }}>
+            Colonnes reconnues automatiquement : nom, contact 1, numéro MTN, segment, commune, email, note.
+            Chaque import constitue un <strong>lot</strong>, rattaché à une campagne et attribué à un agent ou un groupe.
+          </p>
+        </div>
+        <button onClick={downloadTemplate}
+          style={{ display: "flex", alignItems: "center", gap: 6, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, color: C.text, whiteSpace: "nowrap", flexShrink: 0 }}>
+          <FileSpreadsheet size={13} color={C.teal} /> Télécharger le modèle
+        </button>
       </header>
 
       {(campagnes === null || lots === null || groupes === null || agents === null) ? (
@@ -1823,6 +1844,20 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
   const [attachCibleId, setAttachCibleId] = useState("");
   const [attaching, setAttaching] = useState(false);
 
+  const [confirmDeleteLotId, setConfirmDeleteLotId] = useState(null);
+  const [deletingLotId, setDeletingLotId] = useState(null);
+  const [deleteInfo, setDeleteInfo] = useState(null);
+
+  async function deleteLot(lotId) {
+    setDeletingLotId(lotId); setError(null); setDeleteInfo(null);
+    try {
+      const nbSupprimees = await rpc("admin_delete_lot", accessToken, { p_lot_id: lotId });
+      setDeleteInfo({ nbSupprimees });
+      setConfirmDeleteLotId(null);
+      reload();
+    } catch (e) { setError(e.message); } finally { setDeletingLotId(null); }
+  }
+
   async function createCampagne() {
     if (!nom.trim()) return;
     setBusy(true); setError(null);
@@ -1952,6 +1987,12 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
             <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 4 }}>
               Renommer une campagne n'a aucun effet sur la distribution : chaque lot reste rattaché par identifiant, pas par nom.
             </p>
+            {error && <div className="mt-3"><ErrorBlock message={error} /></div>}
+            {deleteInfo && (
+              <div className="flex items-center gap-2 mt-3" style={{ background: C.greenSoft, color: C.green, borderRadius: 8, padding: "8px 12px", fontSize: 12 }}>
+                <CheckCircle2 size={13} /> Lot supprimé ({deleteInfo.nbSupprimees} fiche{deleteInfo.nbSupprimees !== 1 ? "s" : ""} effacée{deleteInfo.nbSupprimees !== 1 ? "s" : ""}).
+              </div>
+            )}
 
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
               <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
@@ -2000,18 +2041,45 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
                   {lotsCourants.map((l) => {
                     const cibleNom = l.cible_type === "agent" ? agents.find((a) => a.id === l.agent_id)?.nom : groupes.find((g) => g.id === l.groupe_id)?.nom;
                     const nbFiches = fichesParLot[l.id];
+                    const confirming = confirmDeleteLotId === l.id;
                     return (
-                      <div key={l.id} className="flex items-center justify-between" style={{ padding: "10px 12px", background: C.canvas, borderRadius: 8 }}>
-                        <div>
-                          <div style={{ fontSize: 12.5, fontWeight: 600 }}>{l.nom}</div>
-                          <div className="flex items-center gap-1.5" style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                            {l.cible_type === "agent" ? <UserCircle2 size={11} /> : <UsersRound size={11} />}
-                            {cibleNom || "?"}
+                      <div key={l.id} style={{ padding: "10px 12px", background: confirming ? C.redSoft : C.canvas, borderRadius: 8 }}>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div style={{ fontSize: 12.5, fontWeight: 600 }}>{l.nom}</div>
+                            <div className="flex items-center gap-1.5" style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                              {l.cible_type === "agent" ? <UserCircle2 size={11} /> : <UsersRound size={11} />}
+                              {cibleNom || "?"}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span style={{ fontSize: 11, color: C.mutedSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                              {nbFiches === undefined ? "…" : nbFiches === null ? "—" : `${nbFiches} fiche${nbFiches !== 1 ? "s" : ""}`}
+                            </span>
+                            {!confirming ? (
+                              <button onClick={() => setConfirmDeleteLotId(l.id)} title="Supprimer ce lot et ses fiches"
+                                style={{ background: "none", border: "none", padding: 4 }}>
+                                <Trash2 size={13} color={C.mutedSoft} />
+                              </button>
+                            ) : null}
                           </div>
                         </div>
-                        <span style={{ fontSize: 11, color: C.mutedSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
-                          {nbFiches === undefined ? "…" : nbFiches === null ? "—" : `${nbFiches} fiche${nbFiches !== 1 ? "s" : ""}`}
-                        </span>
+                        {confirming && (
+                          <div className="flex items-center justify-between mt-2" style={{ paddingTop: 8, borderTop: `1px dashed ${C.red}` }}>
+                            <span style={{ fontSize: 11, color: C.red, fontWeight: 500 }}>
+                              Supprimer définitivement ce lot et ses {nbFiches ?? "?"} fiche(s) ?
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => deleteLot(l.id)} disabled={deletingLotId === l.id}
+                                style={{ background: C.red, color: "#fff", border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+                                {deletingLotId === l.id && <Loader2 size={11} className="animate-spin" />} Confirmer
+                              </button>
+                              <button onClick={() => setConfirmDeleteLotId(null)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5 }}>
+                                Annuler
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
