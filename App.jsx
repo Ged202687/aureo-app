@@ -680,6 +680,23 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
   useEffect(() => { loadStats(); }, [loadStats]);
 
+  const [showCreateClient, setShowCreateClient] = useState(false);
+
+  async function openFicheDirect(f) {
+    setFiche(f);
+    setCat(null); setSub(null); setNote(""); setLastOutcome(null); setLastQualif(null);
+    setView("poste");
+    if (f) {
+      try {
+        const hist = await supaRest(
+          `qualifications?select=commentaire,created_at,types_qualification(categorie,motif)&client_id=eq.${f.id}&order=created_at.desc&limit=1`,
+          { accessToken }
+        );
+        setLastQualif(hist[0] || null);
+      } catch {}
+    }
+  }
+
   async function pullNext() {
     setPulling(true); setError(null); setLastOutcome(null); setLastQualif(null);
     try {
@@ -803,13 +820,21 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       })()}
 
       {view === "recherche" ? (
-        <AgentSearch accessToken={accessToken} />
+        <AgentSearch accessToken={accessToken} agentId={agentId} onAfficher={openFicheDirect} />
       ) : (
       <>
       {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
 
+      {showCreateClient && (
+        <CreateClientPanel
+          accessToken={accessToken} agentId={agentId}
+          onClose={() => setShowCreateClient(false)}
+          onCreated={(client) => { setShowCreateClient(false); openFicheDirect(client); }}
+        />
+      )}
+
       {!fiche ? (
-        <EmptyOrOutcome outcome={lastOutcome} onPull={pullNext} pulling={pulling} />
+        <EmptyOrOutcome outcome={lastOutcome} onPull={pullNext} pulling={pulling} onCreateClient={() => setShowCreateClient(true)} />
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 24 }}>
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden" }}>
@@ -911,11 +936,12 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   );
 }
 
-function AgentSearch({ accessToken }) {
+function AgentSearch({ accessToken, agentId, onAfficher }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [openingId, setOpeningId] = useState(null);
 
   async function runSearch(e) {
     e.preventDefault();
@@ -930,6 +956,16 @@ function AgentSearch({ accessToken }) {
       const rows = await supaRest(`clients?select=*&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
       setResults(rows);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
+  }
+
+  async function handleAfficher(client) {
+    setOpeningId(client.id); setError(null);
+    try {
+      const [updated] = await supaRest(`clients?id=eq.${client.id}`, {
+        method: "PATCH", accessToken, body: { statut: "en_cours", agent_id: agentId },
+      });
+      onAfficher(updated || client);
+    } catch (e) { setError(e.message); } finally { setOpeningId(null); }
   }
 
   return (
@@ -955,7 +991,7 @@ function AgentSearch({ accessToken }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
                 <tr style={{ background: C.canvas, textAlign: "left" }}>
-                  {["N° de box", "N° de fiche", "Client", "Téléphone", "Statut"].map((h) => (
+                  {["N° de box", "N° de fiche", "Client", "Téléphone", "Statut", ""].map((h) => (
                     <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em" }}>{h}</th>
                   ))}
                 </tr>
@@ -971,6 +1007,12 @@ function AgentSearch({ accessToken }) {
                       <td className="mono" style={{ padding: "10px 16px" }}>{c.telephone || "—"}</td>
                       <td style={{ padding: "10px 16px" }}>
                         <span style={{ background: meta.soft, color: meta.color, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
+                      </td>
+                      <td style={{ padding: "10px 16px" }}>
+                        <button onClick={() => handleAfficher(c)} disabled={openingId === c.id}
+                          style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+                          {openingId === c.id && <Loader2 size={11} className="animate-spin" />} Afficher
+                        </button>
                       </td>
                     </tr>
                   );
@@ -997,7 +1039,95 @@ function FicheField({ label, value, icon: Icon, mono }) {
   );
 }
 
-function EmptyOrOutcome({ outcome, onPull, pulling }) {
+function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
+  const [form, setForm] = useState({ nom: "", telephone: "", numero_mtn: "", segment: "", commune: "", numero_box: "", email: "", note: "" });
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  function set(field, value) { setForm((f) => ({ ...f, [field]: value })); }
+
+  async function handleCreate() {
+    setError(null);
+    if (!form.nom.trim()) { setError("Le nom du client est obligatoire."); return; }
+    if (!form.telephone.trim()) { setError("Le numéro de contact 1 est obligatoire pour vérifier les doublons."); return; }
+    setBusy(true);
+    try {
+      // Vérifie si ce client existe déjà et appartient déjà à une campagne (via un lot)
+      const orParts = [`telephone.eq.${form.telephone.trim()}`];
+      if (form.numero_box.trim()) orParts.push(`numero_box.eq.${form.numero_box.trim()}`);
+      const existing = await supaRest(`clients?select=id,nom,lot_id,lots(nom,campagne_id,campagnes(nom))&or=(${orParts.join(",")})`, { accessToken });
+      const dejaEnCampagne = existing.find((c) => c.lot_id);
+      if (dejaEnCampagne) {
+        const nomCampagne = dejaEnCampagne.lots?.campagnes?.nom;
+        setError(`Ce client existe déjà dans une campagne${nomCampagne ? ` (« ${nomCampagne} »)` : ""}. Utilisez la recherche pour retrouver sa fiche plutôt que d'en créer une nouvelle.`);
+        setBusy(false);
+        return;
+      }
+      const [created] = await supaRest("clients", {
+        method: "POST", accessToken,
+        body: {
+          nom: form.nom.trim(),
+          telephone: form.telephone.trim() || null,
+          numero_mtn: form.numero_mtn.trim() || null,
+          segment: form.segment.trim() || null,
+          commune: form.commune.trim() || null,
+          numero_box: form.numero_box.trim() || null,
+          email: form.email.trim() || null,
+          note: form.note.trim() || null,
+          lot_id: null,
+          statut: "en_cours",
+          agent_id: agentId,
+        },
+      });
+      onCreated(created);
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ background: C.surface, border: `1.5px solid ${C.ink}`, borderRadius: 14, padding: 20, marginBottom: 20 }}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Phone size={15} color={C.teal} />
+          <h3 className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Créer un client — appel entrant</h3>
+        </div>
+        <button onClick={onClose} style={{ background: "none", border: "none", color: C.mutedSoft, padding: 4 }}><X size={16} /></button>
+      </div>
+      <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 14 }}>
+        Réservé aux clients qui n'existent dans aucune campagne. Si le numéro correspond à une fiche déjà en campagne, la création sera bloquée.
+      </p>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <input value={form.nom} onChange={(e) => set("nom", e.target.value)} placeholder="Nom du client *"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+        <input value={form.telephone} onChange={(e) => set("telephone", e.target.value)} placeholder="Numéro de contact 1 *"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+        <input value={form.numero_mtn} onChange={(e) => set("numero_mtn", e.target.value)} placeholder="Numéro MTN"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+        <input value={form.segment} onChange={(e) => set("segment", e.target.value)} placeholder="Type de segment"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+        <input value={form.commune} onChange={(e) => set("commune", e.target.value)} placeholder="Commune"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+        <input value={form.numero_box} onChange={(e) => set("numero_box", e.target.value)} placeholder="Numéro de box (si connu)"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+        <input value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="Email"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+        <input value={form.note} onChange={(e) => set("note", e.target.value)} placeholder="Note"
+          style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
+      </div>
+
+      {error && <div className="mt-3"><ErrorBlock message={error} /></div>}
+
+      <div className="flex items-center gap-2 mt-4">
+        <button onClick={handleCreate} disabled={busy}
+          style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+          {busy && <Loader2 size={13} className="animate-spin" />} Créer et ouvrir la fiche
+        </button>
+        <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, fontSize: 13 }}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+function EmptyOrOutcome({ outcome, onPull, pulling, onCreateClient }) {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: "56px 24px", textAlign: "center" }}>
       {outcome ? (
@@ -1018,10 +1148,16 @@ function EmptyOrOutcome({ outcome, onPull, pulling }) {
           <div style={{ fontSize: 14, fontWeight: 600 }}>Aucune fiche en cours</div>
         </div>
       )}
-      <button onClick={onPull} disabled={pulling}
-        style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 9, padding: "11px 22px", fontSize: 13.5, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 8 }}>
-        {pulling && <Loader2 size={14} className="animate-spin" />} Récupérer la fiche suivante
-      </button>
+      <div className="flex items-center justify-center gap-3">
+        <button onClick={onPull} disabled={pulling}
+          style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 9, padding: "11px 22px", fontSize: 13.5, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 8 }}>
+          {pulling && <Loader2 size={14} className="animate-spin" />} Récupérer la fiche suivante
+        </button>
+        <button onClick={onCreateClient}
+          style={{ background: C.surface, color: C.text, border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "11px 18px", fontSize: 13.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <Phone size={14} color={C.teal} /> Créer client (appel entrant)
+        </button>
+      </div>
     </div>
   );
 }
