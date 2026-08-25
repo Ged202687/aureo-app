@@ -1043,6 +1043,28 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
   const [form, setForm] = useState({ nom: "", telephone: "", numero_mtn: "", segment: "", commune: "", numero_box: "", email: "", note: "" });
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [myLots, setMyLots] = useState(null); // null = chargement
+  const [selectedLotId, setSelectedLotId] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const membres = await supaRest(`groupes_agents_membres?select=groupe_id&agent_id=eq.${agentId}`, { accessToken });
+        const groupeIds = membres.map((m) => m.groupe_id);
+        const [lotsDirects, lotsViaGroupe] = await Promise.all([
+          supaRest(`lots?select=id,nom,campagne_id,campagnes(nom)&agent_id=eq.${agentId}`, { accessToken }),
+          groupeIds.length > 0
+            ? supaRest(`lots?select=id,nom,campagne_id,campagnes(nom)&groupe_id=in.(${groupeIds.join(",")})`, { accessToken })
+            : Promise.resolve([]),
+        ]);
+        const tous = [...lotsDirects, ...lotsViaGroupe];
+        setMyLots(tous);
+        if (tous.length === 1) setSelectedLotId(tous[0].id);
+      } catch {
+        setMyLots([]);
+      }
+    })();
+  }, [accessToken, agentId]);
 
   function set(field, value) { setForm((f) => ({ ...f, [field]: value })); }
 
@@ -1050,6 +1072,7 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
     setError(null);
     if (!form.nom.trim()) { setError("Le nom du client est obligatoire."); return; }
     if (!form.telephone.trim()) { setError("Le numéro de contact 1 est obligatoire pour vérifier les doublons."); return; }
+    if (!selectedLotId) { setError("Aucun lot rattaché à votre compte — la fiche ne pourrait jamais être redistribuée. Contactez un administrateur."); return; }
     setBusy(true);
     try {
       // Vérifie si ce client existe déjà et appartient déjà à une campagne (via un lot)
@@ -1074,7 +1097,7 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
           numero_box: form.numero_box.trim() || null,
           email: form.email.trim() || null,
           note: form.note.trim() || null,
-          lot_id: null,
+          lot_id: selectedLotId,
           statut: "en_cours",
           agent_id: agentId,
         },
@@ -1095,6 +1118,29 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
       <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 14 }}>
         Réservé aux clients qui n'existent dans aucune campagne. Si le numéro correspond à une fiche déjà en campagne, la création sera bloquée.
       </p>
+
+      <div style={{ background: C.canvas, borderRadius: 8, padding: 10, marginBottom: 14 }}>
+        {myLots === null ? (
+          <span style={{ fontSize: 12, color: C.mutedSoft }}>Chargement de vos lots…</span>
+        ) : myLots.length === 0 ? (
+          <span style={{ fontSize: 12, color: C.red }}>Vous n'êtes rattaché à aucun lot. La création sera bloquée — contactez un administrateur.</span>
+        ) : myLots.length === 1 ? (
+          <span style={{ fontSize: 12, color: C.text }}>
+            Sera ajoutée au lot <strong>{myLots[0].nom}</strong> ({myLots[0].campagnes?.nom || "campagne inconnue"}).
+          </span>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span style={{ fontSize: 12, color: C.text, whiteSpace: "nowrap" }}>Ajouter au lot :</span>
+            <select value={selectedLotId} onChange={(e) => setSelectedLotId(e.target.value)}
+              style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", fontSize: 12, background: C.surface }}>
+              <option value="">Choisir…</option>
+              {myLots.map((l) => (
+                <option key={l.id} value={l.id}>{l.nom} — {l.campagnes?.nom || "?"}</option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <input value={form.nom} onChange={(e) => set("nom", e.target.value)} placeholder="Nom du client *"
