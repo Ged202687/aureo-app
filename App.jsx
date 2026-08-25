@@ -484,6 +484,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
                   <NavItem icon={Users} label="File d'attente" active={adminTab === "queue"} onClick={() => setAdminTab("queue")} />
                   <NavItem icon={Search} label="Recherche" active={adminTab === "recherche"} onClick={() => setAdminTab("recherche")} />
                   <NavItem icon={Timer} label="Présence" active={adminTab === "presence"} onClick={() => setAdminTab("presence")} />
+                  <NavItem icon={FileSpreadsheet} label="Export" active={adminTab === "export"} onClick={() => setAdminTab("export")} />
                 </>
               ) : (
                 <>
@@ -491,6 +492,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
                   <NavItem icon={Users} label="File d'attente" active={adminTab === "queue"} onClick={() => setAdminTab("queue")} />
                   <NavItem icon={Search} label="Recherche" active={adminTab === "recherche"} onClick={() => setAdminTab("recherche")} />
                   <NavItem icon={Timer} label="Présence" active={adminTab === "presence"} onClick={() => setAdminTab("presence")} />
+                  <NavItem icon={FileSpreadsheet} label="Export" active={adminTab === "export"} onClick={() => setAdminTab("export")} />
                   <NavItem icon={Upload} label="Import" active={adminTab === "import"} onClick={() => setAdminTab("import")} />
                   <NavItem icon={Megaphone} label="Campagnes" active={adminTab === "campagnes"} onClick={() => setAdminTab("campagnes")} />
                   <NavItem icon={UserCircle2} label="Utilisateurs" active={adminTab === "utilisateurs"} onClick={() => setAdminTab("utilisateurs")} />
@@ -572,6 +574,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "queue" && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && <SearchPanel accessToken={accessToken} tree={tree} />}
               {adminTab === "presence" && <PresencePanel accessToken={accessToken} />}
+              {adminTab === "export" && <ExportPanel accessToken={accessToken} />}
             </>
           ) : (
             <>
@@ -579,6 +582,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "queue" && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && <SearchPanel accessToken={accessToken} tree={tree} />}
               {adminTab === "presence" && <PresencePanel accessToken={accessToken} />}
+              {adminTab === "export" && <ExportPanel accessToken={accessToken} />}
               {adminTab === "import" && <ImportPanel accessToken={accessToken} bump={bump} />}
               {adminTab === "campagnes" && <CampaignsPanel accessToken={accessToken} />}
               {adminTab === "utilisateurs" && <UsersPanel accessToken={accessToken} />}
@@ -1625,6 +1629,190 @@ function PresencePanel({ accessToken }) {
   );
 }
 
+
+/* ---------------------------------- admin/superviseur : export des données traitées ---------------------------------- */
+
+function ExportPanel({ accessToken }) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const weekAgoStr = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+
+  const [dateStart, setDateStart] = useState(weekAgoStr);
+  const [dateEnd, setDateEnd] = useState(todayStr);
+  const [campagnes, setCampagnes] = useState(null);
+  const [lots, setLots] = useState(null);
+  const [campagneId, setCampagneId] = useState("");
+  const [lotId, setLotId] = useState("");
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [c, l] = await Promise.all([
+          supaRest("campagnes?select=*&order=created_at.desc", { accessToken }),
+          supaRest("lots?select=id,nom,campagne_id,cible_type,agent_id,groupe_id&order=created_at.desc", { accessToken }),
+        ]);
+        setCampagnes(c); setLots(l);
+      } catch (e) { setError(e.message); }
+    })();
+  }, [accessToken]);
+
+  const lotsDisponibles = lots ? (campagneId ? lots.filter((l) => l.campagne_id === campagneId) : lots) : [];
+
+  async function loadPreview() {
+    setLoading(true); setError(null); setRows(null);
+    try {
+      const start = new Date(dateStart + "T00:00:00");
+      const end = new Date(new Date(dateEnd + "T00:00:00").getTime() + 24 * 3600 * 1000);
+
+      let lotIdsFiltre = null;
+      if (lotId) lotIdsFiltre = [lotId];
+      else if (campagneId) lotIdsFiltre = (lots || []).filter((l) => l.campagne_id === campagneId).map((l) => l.id);
+
+      const qualifs = await supaRest(
+        `qualifications?select=id,client_id,agent_id,commentaire,created_at,types_qualification(categorie,motif,est_contact,est_vente)&created_at=gte.${start.toISOString()}&created_at=lt.${end.toISOString()}&order=created_at.desc`,
+        { accessToken }
+      );
+      if (qualifs.length === 0) { setRows([]); setLoading(false); return; }
+
+      const clientIds = [...new Set(qualifs.map((q) => q.client_id))];
+      const agentIds = [...new Set(qualifs.map((q) => q.agent_id).filter(Boolean))];
+
+      const [clients, profils] = await Promise.all([
+        supaRest(`clients?select=id,numero_fiche,numero_box,nom,telephone,lot_id,lots(nom,campagne_id,campagnes(nom))&id=in.(${clientIds.join(",")})`, { accessToken }),
+        agentIds.length > 0 ? supaRest(`profils?select=id,nom&id=in.(${agentIds.join(",")})`, { accessToken }) : Promise.resolve([]),
+      ]);
+
+      const merged = qualifs.map((q) => {
+        const c = clients.find((cl) => cl.id === q.client_id);
+        return {
+          ...q,
+          client: c || null,
+          agentNom: profils.find((p) => p.id === q.agent_id)?.nom || "—",
+        };
+      }).filter((r) => {
+        if (!lotIdsFiltre) return true;
+        return r.client && lotIdsFiltre.includes(r.client.lot_id);
+      });
+
+      setRows(merged);
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  }
+
+  useEffect(() => { loadPreview(); }, [dateStart, dateEnd, campagneId, lotId]); // eslint-disable-line
+
+  function exportExcel() {
+    setExporting(true);
+    try {
+      const data = rows.map((r) => ({
+        "Date": new Date(r.created_at).toLocaleDateString("fr-FR"),
+        "Heure": new Date(r.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
+        "Campagne": r.client?.lots?.campagnes?.nom || "",
+        "Lot": r.client?.lots?.nom || "",
+        "N° de box": r.client?.numero_box || "",
+        "N° de fiche": r.client?.numero_fiche || "",
+        "Client": r.client?.nom || "",
+        "Téléphone": r.client?.telephone || "",
+        "Agent": r.agentNom,
+        "Catégorie": r.types_qualification?.categorie || "",
+        "Motif": r.types_qualification?.motif || "",
+        "Contact": r.types_qualification?.est_contact ? "Oui" : "Non",
+        "Vente": r.types_qualification?.est_vente ? "Oui" : "Non",
+        "Commentaire": r.commentaire || "",
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Export");
+      XLSX.writeFile(wb, `aureo_export_${dateStart}_${dateEnd}.xlsx`);
+    } finally { setExporting(false); }
+  }
+
+  return (
+    <div>
+      <header className="mb-6">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Export des données traitées</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Choisissez une période, puis affinez par campagne ou par lot.</p>
+      </header>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 20, maxWidth: 760 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 5, textTransform: "uppercase" }}>Du</div>
+            <input type="date" value={dateStart} max={dateEnd} onChange={(e) => setDateStart(e.target.value)}
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13 }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 5, textTransform: "uppercase" }}>Au</div>
+            <input type="date" value={dateEnd} min={dateStart} max={todayStr} onChange={(e) => setDateEnd(e.target.value)}
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13 }} />
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 5, textTransform: "uppercase" }}>Campagne</div>
+            <select value={campagneId} onChange={(e) => { setCampagneId(e.target.value); setLotId(""); }}
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, background: C.surface }}>
+              <option value="">Toutes les campagnes</option>
+              {(campagnes || []).map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 5, textTransform: "uppercase" }}>Lot</div>
+            <select value={lotId} onChange={(e) => setLotId(e.target.value)}
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, background: C.surface }}>
+              <option value="">{campagneId ? "Tous les lots de cette campagne" : "Tous les lots"}</option>
+              {lotsDisponibles.map((l) => <option key={l.id} value={l.id}>{l.nom}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+
+      <div className="flex items-center justify-between mb-4" style={{ maxWidth: 760 }}>
+        <span style={{ fontSize: 13, color: C.muted }}>
+          {loading ? "Recherche en cours…" : rows === null ? "" : `${rows.length} fiche${rows.length !== 1 ? "s" : ""} traitée${rows.length !== 1 ? "s" : ""} sur la période`}
+        </span>
+        <button onClick={exportExcel} disabled={!rows || rows.length === 0 || exporting}
+          style={{ display: "flex", alignItems: "center", gap: 6, background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12.5, fontWeight: 600 }}>
+          {exporting ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />} Exporter Excel
+        </button>
+      </div>
+
+      {rows && rows.length > 0 && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto", maxHeight: 460 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: C.canvas, textAlign: "left" }}>
+                {["Date", "Client", "Agent", "Catégorie", "Motif", "Contact", "Vente"].map((h) => (
+                  <th key={h} style={{ padding: "9px 14px", color: C.muted, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 200).map((r) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                  <td className="mono" style={{ padding: "8px 14px", color: C.mutedSoft, whiteSpace: "nowrap" }}>{new Date(r.created_at).toLocaleDateString("fr-FR")}</td>
+                  <td style={{ padding: "8px 14px", fontWeight: 500 }}>{r.client?.nom || "—"}</td>
+                  <td style={{ padding: "8px 14px", color: C.muted }}>{r.agentNom}</td>
+                  <td style={{ padding: "8px 14px" }}>{r.types_qualification?.categorie}</td>
+                  <td style={{ padding: "8px 14px" }}>{r.types_qualification?.motif}</td>
+                  <td style={{ padding: "8px 14px" }}>{r.types_qualification?.est_contact ? "Oui" : "Non"}</td>
+                  <td style={{ padding: "8px 14px" }}>{r.types_qualification?.est_vente ? "Oui" : "Non"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length > 200 && (
+            <p style={{ fontSize: 11, color: C.mutedSoft, padding: "10px 14px" }}>Aperçu limité à 200 lignes — l'export Excel contient l'intégralité des {rows.length} fiches.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ---------------------------------- admin : file d'attente ---------------------------------- */
 
