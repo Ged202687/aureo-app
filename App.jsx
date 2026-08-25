@@ -369,6 +369,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const [pauseTypes, setPauseTypes] = useState([]);
   const [showPauseMenu, setShowPauseMenu] = useState(false);
   const [currentPauseTypeId, setCurrentPauseTypeId] = useState(null);
+  const [presenceBump, setPresenceBump] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -398,7 +399,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
         try { await supaRest(`pause_details?agent_id=eq.${session.user.id}&fin=is.null`, { method: "PATCH", accessToken, body: { fin: new Date().toISOString() } }); } catch {}
         setCurrentPauseTypeId(null);
       }
-    } catch {} finally { setStatutBusy(false); setShowPauseMenu(false); }
+    } catch {} finally { setStatutBusy(false); setShowPauseMenu(false); setPresenceBump((n) => n + 1); }
   }
   const [treeLoading, setTreeLoading] = useState(true);
   const [treeError, setTreeError] = useState(null);
@@ -553,7 +554,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
           ) : treeError ? (
             <ErrorBlock message={treeError} />
           ) : role === "agent" ? (
-            <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} />
+            <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />
           ) : role === "superviseur" ? (
             <>
               {adminTab === "dashboard" && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} />}
@@ -604,7 +605,7 @@ function NavItem({ icon: Icon, label, active, onClick }) {
 
 /* ---------------------------------- vue agent ---------------------------------- */
 
-function AgentView({ accessToken, tree, bump, agentId }) {
+function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, presenceBump }) {
   const [view, setView] = useState("poste"); // poste | recherche
   const [fiche, setFiche] = useState(null);
   const [pulling, setPulling] = useState(false);
@@ -617,6 +618,12 @@ function AgentView({ accessToken, tree, bump, agentId }) {
   const [lastQualif, setLastQualif] = useState(null);
   const [stats, setStats] = useState({ fiches: 0, rappels: 0 });
   const [myPresence, setMyPresence] = useState(null);
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const loadMyPresence = useCallback(async () => {
     try {
@@ -639,13 +646,7 @@ function AgentView({ accessToken, tree, bump, agentId }) {
         byType[pt.code].seconds += seconds;
         byType[pt.code].occurrences += 1;
       }
-      let presenceBrute = enProd, occupationImpact = 0;
-      Object.values(byType).forEach((t) => {
-        if (t.compte_presence) presenceBrute += t.seconds;
-        if (t.compte_occupation) occupationImpact += t.seconds;
-      });
-      const occupation = (enProd + occupationImpact) > 0 ? enProd / (enProd + occupationImpact) : null;
-      setMyPresence({ enProd, byType, presenceBrute, occupation, pauseTypesOrder: pauseTypes.map((t) => t.code) });
+      setMyPresence({ enProd, byType, fetchedAt: now, pauseTypesOrder: pauseTypes.map((t) => t.code) });
     } catch {}
   }, [accessToken, agentId]);
 
@@ -653,7 +654,7 @@ function AgentView({ accessToken, tree, bump, agentId }) {
     loadMyPresence();
     const t = setInterval(loadMyPresence, 30000);
     return () => clearInterval(t);
-  }, [loadMyPresence]);
+  }, [loadMyPresence, presenceBump]);
 
   const loadStats = useCallback(async () => {
     try {
@@ -741,35 +742,54 @@ function AgentView({ accessToken, tree, bump, agentId }) {
         </div>
       </header>
 
-      {view === "poste" && myPresence && (
-        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", gap: 26, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>Production (jour)</div>
-            <div className="mono" style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{fmtDuration(myPresence.enProd)}</div>
-          </div>
-          <div>
-            <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>Occupation</div>
-            <div className="mono" style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: myPresence.occupation === null ? C.mutedSoft : myPresence.occupation >= 0.8 ? C.green : myPresence.occupation >= 0.5 ? C.amber : C.red }}>
-              {myPresence.occupation === null ? "—" : `${Math.round(myPresence.occupation * 100)}%`}
+      {view === "poste" && myPresence && (() => {
+        const elapsedSinceFetch = Math.max(0, (Date.now() - myPresence.fetchedAt) / 1000);
+        const liveEnProd = myPresence.enProd + (statut === "en_prod" ? elapsedSinceFetch : 0);
+        const liveByType = {};
+        for (const code of myPresence.pauseTypesOrder || []) {
+          const t = myPresence.byType[code];
+          const base = t?.seconds || 0;
+          const isActive = statut === "en_pause" && t?.id === pauseTypeId;
+          liveByType[code] = { ...t, seconds: base + (isActive ? elapsedSinceFetch : 0) };
+        }
+        let presenceBrute = liveEnProd, occupationImpact = 0;
+        Object.values(liveByType).forEach((t) => {
+          if (t.compte_presence) presenceBrute += t.seconds;
+          if (t.compte_occupation) occupationImpact += t.seconds;
+        });
+        const liveOccupation = (liveEnProd + occupationImpact) > 0 ? liveEnProd / (liveEnProd + occupationImpact) : null;
+
+        return (
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", gap: 26, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>Production (jour)</div>
+              <div className="mono" style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{fmtDuration(liveEnProd)}</div>
             </div>
-          </div>
-          <div style={{ width: 1, height: 30, background: C.borderSoft }} />
-          {(myPresence.pauseTypesOrder || []).map((code) => {
-            const t = myPresence.byType[code];
-            const seconds = t?.seconds || 0;
-            const capMin = t?.duree_max_minutes && t?.occurrences_max_jour ? t.duree_max_minutes * t.occurrences_max_jour : null;
-            const overCap = capMin && seconds / 60 > capMin;
-            return (
-              <div key={code}>
-                <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>{t?.nom || code}</div>
-                <div className="mono" style={{ fontSize: 14, fontWeight: 600, marginTop: 2, color: overCap ? C.red : C.text }}>
-                  {fmtDuration(seconds)}{capMin ? ` / ${capMin}m` : ""}
-                </div>
+            <div>
+              <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>Occupation</div>
+              <div className="mono" style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: liveOccupation === null ? C.mutedSoft : liveOccupation >= 0.8 ? C.green : liveOccupation >= 0.5 ? C.amber : C.red }}>
+                {liveOccupation === null ? "—" : `${Math.round(liveOccupation * 100)}%`}
               </div>
-            );
-          })}
-        </div>
-      )}
+            </div>
+            <div style={{ width: 1, height: 30, background: C.borderSoft }} />
+            {(myPresence.pauseTypesOrder || []).map((code) => {
+              const t = liveByType[code];
+              const seconds = t?.seconds || 0;
+              const capMin = t?.duree_max_minutes && t?.occurrences_max_jour ? t.duree_max_minutes * t.occurrences_max_jour : null;
+              const overCap = capMin && seconds / 60 > capMin;
+              const isActive = statut === "en_pause" && t?.id === pauseTypeId;
+              return (
+                <div key={code}>
+                  <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>{t?.nom || code}</div>
+                  <div className="mono" style={{ fontSize: 14, fontWeight: 600, marginTop: 2, color: overCap ? C.red : isActive ? C.amber : C.text }}>
+                    {fmtDuration(seconds)}{capMin ? ` / ${capMin}m` : ""}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {view === "recherche" ? (
         <AgentSearch accessToken={accessToken} />
