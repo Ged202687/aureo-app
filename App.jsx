@@ -117,7 +117,7 @@ function rowsToClients(rows, lotId) {
   return rows
     .filter((r) => Object.values(r).some((v) => String(v || "").trim() !== ""))
     .map((r) => ({
-      numero_fiche: pickFieldStr(r, ["numerobox", "numerodebox", "box", "numerofiche", "numerodefiche"]),
+      numero_box: pickFieldStr(r, ["numerobox", "numerodebox", "box"]),
       nom: pickFieldStr(r, ["nom", "name", "client", "nomclient", "fullname"]) || "Sans nom",
       entreprise: pickFieldStr(r, ["entreprise", "societe", "company", "organisation"]),
       telephone: pickFieldStr(r, ["tel", "telephone", "phone", "mobile", "contact1", "numerocontact1"]),
@@ -814,7 +814,10 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 24 }}>
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden" }}>
             <div style={{ background: C.ink, color: "#fff", padding: "14px 18px" }} className="flex items-center justify-between">
-              <span className="mono flex items-center gap-1" style={{ fontSize: 11, letterSpacing: "0.04em", color: "#A6ADBA" }}><Hash size={11} />{fiche.numero_fiche}</span>
+              <span className="mono flex items-center gap-3" style={{ fontSize: 11, letterSpacing: "0.04em", color: "#A6ADBA" }}>
+                <span className="flex items-center gap-1"><Hash size={11} />{fiche.numero_fiche}</span>
+                {fiche.numero_box && <span style={{ color: "#6B7280" }}>Box {fiche.numero_box}</span>}
+              </span>
               <span style={{ fontSize: 10.5, background: C.amber, color: C.ink, padding: "2px 8px", borderRadius: 999, fontWeight: 600 }}>EN COURS</span>
             </div>
             <div className="px-5 py-5">
@@ -922,7 +925,7 @@ function AgentSearch({ accessToken }) {
     try {
       const escaped = q.replace(/[%,]/g, "");
       const isNumeric = /^\d+$/.test(q);
-      const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`];
+      const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`, `numero_box.ilike.*${escaped}*`];
       if (isNumeric) orParts.push(`numero_fiche.eq.${q}`);
       const rows = await supaRest(`clients?select=*&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
       setResults(rows);
@@ -952,7 +955,7 @@ function AgentSearch({ accessToken }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
                 <tr style={{ background: C.canvas, textAlign: "left" }}>
-                  {["N° de box", "Client", "Téléphone", "Statut"].map((h) => (
+                  {["N° de box", "N° de fiche", "Client", "Téléphone", "Statut"].map((h) => (
                     <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em" }}>{h}</th>
                   ))}
                 </tr>
@@ -962,6 +965,7 @@ function AgentSearch({ accessToken }) {
                   const meta = STATUS_META[c.statut];
                   return (
                     <tr key={c.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                      <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_box || "—"}</td>
                       <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_fiche}</td>
                       <td style={{ padding: "10px 16px", fontWeight: 500 }}>{c.nom}</td>
                       <td className="mono" style={{ padding: "10px 16px" }}>{c.telephone || "—"}</td>
@@ -1038,7 +1042,7 @@ function SearchPanel({ accessToken, tree }) {
     try {
       const escaped = q.replace(/[%,]/g, "");
       const isNumeric = /^\d+$/.test(q);
-      const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`, `email.ilike.*${escaped}*`];
+      const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`, `email.ilike.*${escaped}*`, `numero_box.ilike.*${escaped}*`];
       if (isNumeric) orParts.push(`numero_fiche.eq.${q}`);
       const rows = await supaRest(`clients?select=*&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
       setResults(rows);
@@ -1049,13 +1053,13 @@ function SearchPanel({ accessToken, tree }) {
     <div>
       <header className="mb-6">
         <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Recherche</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Par numéro de fiche, nom du client ou numéro de contact.</p>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Par numéro de fiche, numéro de box, nom du client ou numéro de contact.</p>
       </header>
 
       <form onSubmit={runSearch} className="flex items-center gap-2 mb-6" style={{ maxWidth: 480 }}>
         <div className="flex items-center gap-2" style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "9px 12px" }}>
           <Search size={15} color={C.mutedSoft} />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="N° de fiche, nom, téléphone…"
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="N° de fiche, N° de box, nom, téléphone…"
             style={{ border: "none", outline: "none", fontSize: 13, flex: 1 }} />
         </div>
         <button type="submit" style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
@@ -1073,7 +1077,7 @@ function SearchPanel({ accessToken, tree }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
                 <tr style={{ background: C.canvas, textAlign: "left" }}>
-                  {["N°", "Client", "Entreprise", "Téléphone", "Statut"].map((h) => (
+                  {["N° de fiche", "N° de box", "Client", "Téléphone", "Statut"].map((h) => (
                     <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em" }}>{h}</th>
                   ))}
                 </tr>
@@ -1084,8 +1088,8 @@ function SearchPanel({ accessToken, tree }) {
                   return (
                     <tr key={c.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
                       <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_fiche}</td>
+                      <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_box || "—"}</td>
                       <td style={{ padding: "10px 16px", fontWeight: 500 }}>{c.nom}</td>
-                      <td style={{ padding: "10px 16px", color: C.muted }}>{c.entreprise || "—"}</td>
                       <td className="mono" style={{ padding: "10px 16px" }}>{c.telephone || "—"}</td>
                       <td style={{ padding: "10px 16px" }}>
                         <span style={{ background: meta.soft, color: meta.color, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
@@ -1249,14 +1253,19 @@ function PresencePanel({ accessToken }) {
     try {
       const startOfDay = new Date(date + "T00:00:00");
       const endOfDay = new Date(startOfDay.getTime() + 24 * 3600 * 1000);
-      const [profils, temps, pauseTypes, pauseDetails] = await Promise.all([
+      const [profils, temps, pauseTypes, pauseDetails, historique] = await Promise.all([
         supaRest("profils?select=id,nom,role,matricule&role=in.(agent,superviseur)&order=nom.asc", { accessToken }),
         supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${date}`, { accessToken }),
         supaRest("pause_types?select=*&order=ordre.asc", { accessToken }),
         supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}`, { accessToken }),
+        supaRest(`statuts_historique?select=agent_id,debut&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}&order=debut.asc`, { accessToken }),
       ]);
       setPauseTypesList(pauseTypes);
       const now = Date.now();
+      const connexionParAgent = {};
+      for (const h of historique) {
+        if (!connexionParAgent[h.agent_id]) connexionParAgent[h.agent_id] = h.debut;
+      }
 
       const parAgent = profils.map((p) => {
         const enProd = temps.find((t) => t.agent_id === p.id && t.statut === "en_prod")?.secondes || 0;
@@ -1276,7 +1285,7 @@ function PresencePanel({ accessToken }) {
           if (t.compte_occupation) occupationImpact += t.seconds;
         });
         const occupation = (enProd + occupationImpact) > 0 ? enProd / (enProd + occupationImpact) : null;
-        return { ...p, enProd, byType, presenceBrute, occupation };
+        return { ...p, enProd, byType, presenceBrute, occupation, heureConnexion: connexionParAgent[p.id] || null };
       }).filter((a) => a.presenceBrute > 0 || Object.keys(a.byType).length > 0);
 
       parAgent.sort((a, b) => b.presenceBrute - a.presenceBrute);
@@ -1294,6 +1303,7 @@ function PresencePanel({ accessToken }) {
           Matricule: a.matricule,
           Agent: a.nom,
           Rôle: a.role,
+          "Heure de connexion": a.heureConnexion ? new Date(a.heureConnexion).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "",
           "Temps production": fmtDuration(a.enProd),
           "Temps production (h)": hoursDecimal(a.enProd),
         };
@@ -1387,7 +1397,7 @@ function PresencePanel({ accessToken }) {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead>
                   <tr style={{ background: C.canvas, textAlign: "left" }}>
-                    {["Agent", "Rôle", "Production", ...pauseTypesList.map((pt) => pt.nom), "Occupation"].map((h) => (
+                    {["Agent", "Rôle", "Connexion", "Production", ...pauseTypesList.map((pt) => pt.nom), "Occupation"].map((h) => (
                       <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -1397,6 +1407,9 @@ function PresencePanel({ accessToken }) {
                     <tr key={a.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
                       <td style={{ padding: "10px 16px", fontWeight: 500, whiteSpace: "nowrap" }}>{a.nom}</td>
                       <td style={{ padding: "10px 16px", textTransform: "capitalize", color: C.muted }}>{a.role}</td>
+                      <td className="mono" style={{ padding: "10px 16px", color: C.muted, whiteSpace: "nowrap" }}>
+                        {a.heureConnexion ? new Date(a.heureConnexion).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "—"}
+                      </td>
                       <td className="mono" style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>{fmtDuration(a.enProd)}</td>
                       {pauseTypesList.map((pt) => {
                         const t = a.byType[pt.code];
