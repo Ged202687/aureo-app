@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, Plus, Trash2, UserCircle2, FastForward, Inbox, ArrowRight,
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
-  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X,
+  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -370,9 +370,11 @@ function useElapsed(since) {
 
 function Workspace({ session, onLogout, onProfilChange }) {
   const { accessToken, profil, connectedAt } = session;
-  const isAdmin = profil?.role === "admin";
+  const isSuperAdmin = profil?.role === "super_admin";
+  const isAdmin = profil?.role === "admin" || isSuperAdmin;
   const isSuperviseur = profil?.role === "superviseur";
-  const [role, setRole] = useState(isAdmin ? "admin" : isSuperviseur ? "superviseur" : "agent");
+  const isCoach = profil?.role === "coach";
+  const [role, setRole] = useState(isAdmin ? "admin" : isSuperviseur ? "superviseur" : isCoach ? "coach" : "agent");
   const [adminTab, setAdminTab] = useState("dashboard");
   const [tree, setTree] = useState([]);
   const elapsed = useElapsed(connectedAt);
@@ -381,6 +383,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const [showPauseMenu, setShowPauseMenu] = useState(false);
   const [currentPauseTypeId, setCurrentPauseTypeId] = useState(null);
   const [presenceBump, setPresenceBump] = useState(0);
+  const [extraTabs, setExtraTabs] = useState([]); // accès supplémentaires accordés à ce superviseur
 
   useEffect(() => {
     (async () => {
@@ -392,6 +395,12 @@ function Workspace({ session, onLogout, onProfilChange }) {
         const open = await supaRest(`pause_details?select=pause_type_id&agent_id=eq.${session.user.id}&fin=is.null&order=debut.desc&limit=1`, { accessToken });
         if (open[0]) setCurrentPauseTypeId(open[0].pause_type_id);
       } catch {}
+      if (isSuperviseur) {
+        try {
+          const perms = await supaRest(`permissions_supplementaires?select=ecran&profil_id=eq.${session.user.id}`, { accessToken });
+          setExtraTabs(perms.map((p) => p.ecran));
+        } catch {}
+      }
     })();
   }, [accessToken]); // eslint-disable-line
 
@@ -478,6 +487,11 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <nav className="px-3 pt-5 flex flex-col gap-1">
               {role === "agent" ? (
                 <NavItem icon={Inbox} label="Poste de travail" active onClick={() => setAdminTab("poste")} />
+              ) : role === "coach" ? (
+                <>
+                  <NavItem icon={LayoutDashboard} label="Tableau de bord" active={adminTab === "dashboard"} onClick={() => setAdminTab("dashboard")} />
+                  <NavItem icon={FileSpreadsheet} label="Export" active={adminTab === "export"} onClick={() => setAdminTab("export")} />
+                </>
               ) : role === "superviseur" ? (
                 <>
                   <NavItem icon={LayoutDashboard} label="Tableau de bord" active={adminTab === "dashboard"} onClick={() => setAdminTab("dashboard")} />
@@ -485,6 +499,10 @@ function Workspace({ session, onLogout, onProfilChange }) {
                   <NavItem icon={Search} label="Recherche" active={adminTab === "recherche"} onClick={() => setAdminTab("recherche")} />
                   <NavItem icon={Timer} label="Présence" active={adminTab === "presence"} onClick={() => setAdminTab("presence")} />
                   <NavItem icon={FileSpreadsheet} label="Export" active={adminTab === "export"} onClick={() => setAdminTab("export")} />
+                  {extraTabs.includes("import") && <NavItem icon={Upload} label="Import" active={adminTab === "import"} onClick={() => setAdminTab("import")} />}
+                  {extraTabs.includes("campagnes") && <NavItem icon={Megaphone} label="Campagnes" active={adminTab === "campagnes"} onClick={() => setAdminTab("campagnes")} />}
+                  {extraTabs.includes("utilisateurs") && <NavItem icon={UserCircle2} label="Utilisateurs" active={adminTab === "utilisateurs"} onClick={() => setAdminTab("utilisateurs")} />}
+                  {extraTabs.includes("rules") && <NavItem icon={ListChecks} label="Règles de qualification" active={adminTab === "rules"} onClick={() => setAdminTab("rules")} />}
                 </>
               ) : (
                 <>
@@ -513,7 +531,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               </div>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profil?.nom || session.user.email}</div>
-                <div style={{ fontSize: 10.5, color: "#8B93A3" }}>{isAdmin ? "Administrateur" : isSuperviseur ? "Superviseur" : "Agent"}</div>
+                <div style={{ fontSize: 10.5, color: "#8B93A3" }}>{isSuperAdmin ? "Super Administrateur" : isAdmin ? "Administrateur" : isSuperviseur ? "Superviseur" : isCoach ? "Coach" : "Agent"}</div>
               </div>
             </div>
             <div className="flex items-center gap-1.5 mono mb-3" style={{ fontSize: 11.5, color: C.amber, background: "rgba(224,147,43,0.12)", borderRadius: 7, padding: "5px 9px" }}>
@@ -568,6 +586,11 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <ErrorBlock message={treeError} />
           ) : role === "agent" ? (
             <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />
+          ) : role === "coach" ? (
+            <>
+              {adminTab === "dashboard" && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} />}
+              {adminTab === "export" && <ExportPanel accessToken={accessToken} />}
+            </>
           ) : role === "superviseur" ? (
             <>
               {adminTab === "dashboard" && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} />}
@@ -575,6 +598,10 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "recherche" && <SearchPanel accessToken={accessToken} tree={tree} />}
               {adminTab === "presence" && <PresencePanel accessToken={accessToken} />}
               {adminTab === "export" && <ExportPanel accessToken={accessToken} />}
+              {adminTab === "import" && extraTabs.includes("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
+              {adminTab === "campagnes" && extraTabs.includes("campagnes") && <CampaignsPanel accessToken={accessToken} />}
+              {adminTab === "utilisateurs" && extraTabs.includes("utilisateurs") && <UsersPanel accessToken={accessToken} isSuperAdmin={false} />}
+              {adminTab === "rules" && extraTabs.includes("rules") && <Rules accessToken={accessToken} tree={tree} reload={loadTree} />}
             </>
           ) : (
             <>
@@ -585,7 +612,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "export" && <ExportPanel accessToken={accessToken} />}
               {adminTab === "import" && <ImportPanel accessToken={accessToken} bump={bump} />}
               {adminTab === "campagnes" && <CampaignsPanel accessToken={accessToken} />}
-              {adminTab === "utilisateurs" && <UsersPanel accessToken={accessToken} />}
+              {adminTab === "utilisateurs" && <UsersPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
               {adminTab === "rules" && <Rules accessToken={accessToken} tree={tree} reload={loadTree} />}
             </>
           )}
@@ -2584,7 +2611,7 @@ function GroupesTab({ accessToken, groupes, agents, membres, selected, setSelect
 
 /* ---------------------------------- admin : utilisateurs (création de comptes) ---------------------------------- */
 
-function UsersPanel({ accessToken }) {
+function UsersPanel({ accessToken, isSuperAdmin }) {
   const [comptes, setComptes] = useState(null);
   const [error, setError] = useState(null);
   const [nom, setNom] = useState("");
@@ -2601,9 +2628,20 @@ function UsersPanel({ accessToken }) {
   const [resettingId, setResettingId] = useState(null);
   const [lastReset, setLastReset] = useState(null); // { compte, mot_de_passe }
 
+  const [managingPermsId, setManagingPermsId] = useState(null);
+  const [permsEnCours, setPermsEnCours] = useState([]);
+  const [permsBusy, setPermsBusy] = useState(false);
+
+  const ECRANS_DISPONIBLES = [
+    { id: "import", label: "Import" },
+    { id: "campagnes", label: "Campagnes" },
+    { id: "utilisateurs", label: "Utilisateurs" },
+    { id: "rules", label: "Règles de qualification" },
+  ];
+
   const load = useCallback(async () => {
     try {
-      const rows = await supaRest("profils?select=id,nom,login,role,statut,matricule,actif&role=in.(agent,superviseur)&order=nom.asc", { accessToken });
+      const rows = await supaRest("profils?select=id,nom,login,role,statut,matricule,actif&role=in.(agent,superviseur,coach,admin)&order=nom.asc", { accessToken });
       setComptes(rows);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
@@ -2625,7 +2663,7 @@ function UsersPanel({ accessToken }) {
 
   function startEdit(c) {
     setEditingId(c.id); setEditNom(c.nom); setEditLogin(c.login || "");
-    setLastReset(null);
+    setLastReset(null); setManagingPermsId(null);
   }
 
   async function saveEdit(id) {
@@ -2653,17 +2691,37 @@ function UsersPanel({ accessToken }) {
     } catch (e) { setError(e.message); } finally { setResettingId(null); }
   }
 
+  async function openPerms(c) {
+    setManagingPermsId(c.id); setEditingId(null); setError(null);
+    try {
+      const rows = await supaRest(`permissions_supplementaires?select=ecran&profil_id=eq.${c.id}`, { accessToken });
+      setPermsEnCours(rows.map((r) => r.ecran));
+    } catch (e) { setError(e.message); }
+  }
+
+  async function togglePerm(profilId, ecran, accorde) {
+    setPermsBusy(true); setError(null);
+    try {
+      await rpc("super_admin_set_permission", accessToken, { p_profil_id: profilId, p_ecran: ecran, p_accorde: accorde });
+      setPermsEnCours((prev) => accorde ? [...prev, ecran] : prev.filter((e) => e !== ecran));
+    } catch (e) { setError(e.message); } finally { setPermsBusy(false); }
+  }
+
+  const roleOptions = isSuperAdmin
+    ? [{ id: "agent", label: "Agent" }, { id: "superviseur", label: "Superviseur" }, { id: "coach", label: "Coach" }, { id: "admin", label: "Admin" }]
+    : [{ id: "agent", label: "Agent" }, { id: "superviseur", label: "Superviseur" }, { id: "coach", label: "Coach" }];
+
   return (
     <div>
       <header className="mb-6">
         <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Utilisateurs</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Crée un accès Supabase réel (login + mot de passe généré) pour un agent ou un superviseur.</p>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Crée un accès Supabase réel (login + mot de passe généré) pour un agent, un superviseur, un coach{isSuperAdmin ? " ou un administrateur" : ""}.</p>
       </header>
 
       <form onSubmit={createCompte} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 20, maxWidth: 620 }}>
         <div className="flex items-center gap-2 mb-3">
           <div style={{ background: C.canvas, borderRadius: 8, padding: 3 }} className="flex gap-1">
-            {[{ id: "agent", label: "Agent" }, { id: "superviseur", label: "Superviseur" }].map((r) => (
+            {roleOptions.map((r) => (
               <button key={r.id} type="button" onClick={() => setRoleChoisi(r.id)}
                 style={{ padding: "7px 14px", borderRadius: 6, border: "none", background: roleChoisi === r.id ? C.ink : "transparent", color: roleChoisi === r.id ? "#fff" : C.muted, fontSize: 12.5, fontWeight: 600 }}>
                 {r.label}
@@ -2794,6 +2852,12 @@ function UsersPanel({ accessToken }) {
                             style={{ background: "none", border: "none", padding: 5 }}>
                             {c.actif === false ? <PlayCircle size={13} color={C.green} /> : <PowerOff size={13} color={C.red} />}
                           </button>
+                          {isSuperAdmin && c.role === "superviseur" && (
+                            <button onClick={() => openPerms(c)} title="Gérer les accès supplémentaires"
+                              style={{ background: "none", border: "none", padding: 5 }}>
+                              <Key size={13} color={C.mutedSoft} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </>
@@ -2804,6 +2868,37 @@ function UsersPanel({ accessToken }) {
           </table>
         </div>
       )}
+
+      {managingPermsId && (() => {
+        const cible = comptes.find((c) => c.id === managingPermsId);
+        if (!cible) return null;
+        return (
+          <div style={{ background: C.surface, border: `1.5px solid ${C.ink}`, borderRadius: 12, padding: 18, marginTop: 20, maxWidth: 620 }}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Key size={14} color={C.muted} />
+                <h3 className="disp" style={{ fontSize: 14, fontWeight: 700 }}>Accès supplémentaires — {cible.nom}</h3>
+              </div>
+              <button onClick={() => setManagingPermsId(null)} style={{ background: "none", border: "none", color: C.mutedSoft, padding: 4 }}><X size={15} /></button>
+            </div>
+            <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 12 }}>
+              Ce superviseur garde son accès de base (Tableau de bord, File d'attente, Recherche, Présence, Export). Coche les écrans supplémentaires à lui ouvrir.
+            </p>
+            <div className="flex flex-col gap-2">
+              {ECRANS_DISPONIBLES.map((e) => {
+                const accorde = permsEnCours.includes(e.id);
+                return (
+                  <label key={e.id} className="flex items-center gap-2" style={{ fontSize: 13, cursor: "pointer" }}>
+                    <input type="checkbox" checked={accorde} disabled={permsBusy}
+                      onChange={(ev) => togglePerm(cible.id, e.id, ev.target.checked)} />
+                    {e.label}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
