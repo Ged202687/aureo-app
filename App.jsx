@@ -8,7 +8,7 @@ import {
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw,
 } from "lucide-react";
- 
+
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
 
 const SUPABASE_URL = "https://fipvndiueabrehsmqxth.supabase.co";
@@ -1485,7 +1485,7 @@ function PresencePanel({ accessToken }) {
         });
         const occupation = (enProd + occupationImpact) > 0 ? enProd / (enProd + occupationImpact) : null;
         return { ...p, enProd, byType, presenceBrute, occupation, heureConnexion: connexionParAgent[p.id] || null };
-      }).filter((a) => a.presenceBrute > 0 || Object.keys(a.byType).length > 0);
+      });
 
       parAgent.sort((a, b) => b.presenceBrute - a.presenceBrute);
       setRows(parAgent);
@@ -1567,8 +1567,10 @@ function PresencePanel({ accessToken }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 24 }}>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
               <Users size={16} color={C.ink} />
-              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{rows.length}</div>
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Agents actifs ce jour</div>
+              <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>
+                {rows.filter((a) => a.presenceBrute > 0).length} <span style={{ fontSize: 14, color: C.mutedSoft, fontWeight: 500 }}>/ {rows.length}</span>
+              </div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Actifs ce jour / périmètre total</div>
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
               <PlayCircle size={16} color={C.green} />
@@ -1590,7 +1592,7 @@ function PresencePanel({ accessToken }) {
           </div>
 
           {rows.length === 0 ? (
-            <p style={{ fontSize: 13, color: C.muted }}>Aucune activité enregistrée pour cette journée.</p>
+            <p style={{ fontSize: 13, color: C.muted }}>Aucune personne dans votre périmètre pour le moment.</p>
           ) : (
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
