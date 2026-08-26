@@ -631,7 +631,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const [lastOutcome, setLastOutcome] = useState(null);
   const [error, setError] = useState(null);
   const [lastQualif, setLastQualif] = useState(null);
-  const [stats, setStats] = useState({ fiches: 0, rappels: 0 });
+  const [stats, setStats] = useState({ fiches: 0, rappels: 0, ventes: 0 });
   const [myPresence, setMyPresence] = useState(null);
   const [, forceTick] = useState(0);
 
@@ -675,10 +675,14 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     try {
       const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
       const rows = await supaRest(
-        `qualifications?select=est_rappel&agent_id=eq.${agentId}&created_at=gte.${startOfDay.toISOString()}`,
+        `qualifications?select=est_rappel,types_qualification(est_vente)&agent_id=eq.${agentId}&created_at=gte.${startOfDay.toISOString()}`,
         { accessToken }
       );
-      setStats({ fiches: rows.filter((r) => !r.est_rappel).length, rappels: rows.filter((r) => r.est_rappel).length });
+      setStats({
+        fiches: rows.filter((r) => !r.est_rappel).length,
+        rappels: rows.filter((r) => r.est_rappel).length,
+        ventes: rows.filter((r) => r.types_qualification?.est_vente).length,
+      });
     } catch {}
   }, [accessToken, agentId]);
 
@@ -768,6 +772,10 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
               <div style={{ textAlign: "right" }}>
                 <div className="disp mono" style={{ fontSize: 20, fontWeight: 700, color: C.amber }}>{stats.rappels}</div>
                 <div style={{ fontSize: 10.5, color: C.muted }}>rappels traités</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div className="disp mono" style={{ fontSize: 20, fontWeight: 700, color: C.green }}>{stats.ventes}</div>
+                <div style={{ fontSize: 10.5, color: C.muted }}>ventes</div>
               </div>
             </div>
           )}
@@ -1308,26 +1316,17 @@ function Dashboard({ accessToken, refreshFlag }) {
         statutRows.forEach((r) => { c[r.statut] = r.total; c.total += r.total; });
         setCounts(c);
 
-        const rappels = await supaRest("clients?select=agent_id,visible_apres&statut=eq.planifie&agent_id=not.is.null", { accessToken });
+        const rappels = await supaRest("vue_rappels_par_agent?select=*", { accessToken });
         const profils = await supaRest("profils?select=id,nom,statut", { accessToken });
-        const now = Date.now();
-        const parAgentMap = {};
-        for (const r of rappels) {
-          if (!parAgentMap[r.agent_id]) parAgentMap[r.agent_id] = { total: 0, enRetard: 0 };
-          parAgentMap[r.agent_id].total += 1;
-          if (r.visible_apres && new Date(r.visible_apres).getTime() <= now) parAgentMap[r.agent_id].enRetard += 1;
-        }
-        const list = Object.entries(parAgentMap).map(([agentId, v]) => ({
-          agentId, nom: profils.find((p) => p.id === agentId)?.nom || "Agent", statut: profils.find((p) => p.id === agentId)?.statut, ...v,
+        const list = rappels.map((r) => ({
+          agentId: r.agent_id, nom: profils.find((p) => p.id === r.agent_id)?.nom || "Agent",
+          statut: profils.find((p) => p.id === r.agent_id)?.statut, total: r.total, enRetard: r.en_retard,
         })).sort((a, b) => b.enRetard - a.enRetard || b.total - a.total);
         setParAgent(list);
 
-        // Performance : qualifications réalisées, ventilées contact / vente via types_qualification
-        const qualifs = await supaRest("qualifications?select=id,types_qualification(est_contact,est_vente)", { accessToken });
-        const traitees = qualifs.length;
-        const contacts = qualifs.filter((q) => q.types_qualification?.est_contact).length;
-        const ventes = qualifs.filter((q) => q.types_qualification?.est_vente).length;
-        setPerf({ traitees, contacts, ventes });
+        // Performance : qualifications réalisées, ventilées contact / vente (agrégation SQL)
+        const [perfRow] = await supaRest("vue_perf_globale?select=*", { accessToken });
+        setPerf({ traitees: perfRow?.traitees || 0, contacts: perfRow?.contacts || 0, ventes: perfRow?.ventes || 0 });
       } catch (e) { setError(e.message); }
     })();
   }, [accessToken, refreshFlag]);
@@ -2290,14 +2289,16 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
   useEffect(() => {
     if (!current) return;
     (async () => {
-      const counts = {};
-      for (const l of lotsCourants) {
-        try {
-          const rows = await supaRest(`clients?select=id&lot_id=eq.${l.id}`, { accessToken });
-          counts[l.id] = rows.length;
-        } catch { counts[l.id] = null; }
+      try {
+        const rows = await supaRest("vue_compte_fiches_par_lot?select=*", { accessToken });
+        const counts = {};
+        lotsCourants.forEach((l) => { counts[l.id] = rows.find((r) => r.lot_id === l.id)?.total || 0; });
+        setFichesParLot(counts);
+      } catch {
+        const counts = {};
+        lotsCourants.forEach((l) => { counts[l.id] = null; });
+        setFichesParLot(counts);
       }
-      setFichesParLot(counts);
     })();
   }, [current?.id, lots.length]); // eslint-disable-line
 
