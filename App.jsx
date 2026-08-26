@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, Plus, Trash2, UserCircle2, FastForward, Inbox, ArrowRight,
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
-  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key,
+  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -2249,6 +2249,11 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
   const [deletingLotId, setDeletingLotId] = useState(null);
   const [deleteInfo, setDeleteInfo] = useState(null);
 
+  const [editingCibleLotId, setEditingCibleLotId] = useState(null);
+  const [editCibleType, setEditCibleType] = useState("agent");
+  const [editCibleId, setEditCibleId] = useState("");
+  const [savingCible, setSavingCible] = useState(false);
+
   async function deleteLot(lotId) {
     setDeletingLotId(lotId); setError(null); setDeleteInfo(null);
     try {
@@ -2257,6 +2262,26 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
       setConfirmDeleteLotId(null);
       reload();
     } catch (e) { setError(e.message); } finally { setDeletingLotId(null); }
+  }
+
+  function startEditCible(l) {
+    setEditingCibleLotId(l.id);
+    setEditCibleType(l.cible_type);
+    setEditCibleId(l.cible_type === "agent" ? l.agent_id : l.groupe_id);
+    setConfirmDeleteLotId(null);
+  }
+
+  async function saveCible(lotId) {
+    if (!editCibleId) return;
+    setSavingCible(true); setError(null);
+    try {
+      const body = editCibleType === "agent"
+        ? { cible_type: "agent", agent_id: editCibleId, groupe_id: null }
+        : { cible_type: "groupe", groupe_id: editCibleId, agent_id: null };
+      await supaRest(`lots?id=eq.${lotId}`, { method: "PATCH", accessToken, body });
+      setEditingCibleLotId(null);
+      reload();
+    } catch (e) { setError(e.message); } finally { setSavingCible(false); }
   }
 
   async function createCampagne() {
@@ -2445,6 +2470,8 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
                     const cibleNom = l.cible_type === "agent" ? agents.find((a) => a.id === l.agent_id)?.nom : groupes.find((g) => g.id === l.groupe_id)?.nom;
                     const nbFiches = fichesParLot[l.id];
                     const confirming = confirmDeleteLotId === l.id;
+                    const editingCible = editingCibleLotId === l.id;
+                    const editCibleOptions = editCibleType === "agent" ? agents : groupes;
                     return (
                       <div key={l.id} style={{ padding: "10px 12px", background: confirming ? C.redSoft : C.canvas, borderRadius: 8 }}>
                         <div className="flex items-center justify-between">
@@ -2459,14 +2486,51 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
                             <span style={{ fontSize: 11, color: C.mutedSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
                               {nbFiches === undefined ? "…" : nbFiches === null ? "—" : `${nbFiches} fiche${nbFiches !== 1 ? "s" : ""}`}
                             </span>
-                            {!confirming ? (
-                              <button onClick={() => setConfirmDeleteLotId(l.id)} title="Supprimer ce lot et ses fiches"
-                                style={{ background: "none", border: "none", padding: 4 }}>
-                                <Trash2 size={13} color={C.mutedSoft} />
-                              </button>
-                            ) : null}
+                            {!confirming && !editingCible && (
+                              <>
+                                <button onClick={() => startEditCible(l)} title="Modifier la cible (agent/groupe)"
+                                  style={{ background: "none", border: "none", padding: 4 }}>
+                                  <RefreshCw size={13} color={C.mutedSoft} />
+                                </button>
+                                <button onClick={() => setConfirmDeleteLotId(l.id)} title="Supprimer ce lot et ses fiches"
+                                  style={{ background: "none", border: "none", padding: 4 }}>
+                                  <Trash2 size={13} color={C.mutedSoft} />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
+                        {editingCible && (
+                          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.border}` }}>
+                            <div className="flex items-center gap-2 mb-2">
+                              <div style={{ background: C.surface, borderRadius: 7, padding: 3, border: `1px solid ${C.border}` }} className="flex gap-1">
+                                {[{ id: "agent", label: "Agent" }, { id: "groupe", label: "Groupe" }].map((t) => (
+                                  <button key={t.id} onClick={() => { setEditCibleType(t.id); setEditCibleId(""); }}
+                                    style={{ padding: "5px 11px", borderRadius: 5, border: "none", background: editCibleType === t.id ? C.ink : "transparent", color: editCibleType === t.id ? "#fff" : C.muted, fontSize: 11.5, fontWeight: 600 }}>
+                                    {t.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <select value={editCibleId || ""} onChange={(e) => setEditCibleId(e.target.value)}
+                                style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, background: C.surface }}>
+                                <option value="">Choisir {editCibleType === "agent" ? "un agent" : "un groupe"}…</option>
+                                {editCibleOptions.map((o) => <option key={o.id} value={o.id}>{o.nom}</option>)}
+                              </select>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => saveCible(l.id)} disabled={savingCible || !editCibleId}
+                                style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
+                                {savingCible && <Loader2 size={11} className="animate-spin" />} Enregistrer
+                              </button>
+                              <button onClick={() => setEditingCibleLotId(null)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5 }}>
+                                Annuler
+                              </button>
+                            </div>
+                            <p style={{ fontSize: 10.5, color: C.mutedSoft, marginTop: 6 }}>
+                              Les fiches déjà présentes dans ce lot suivent la nouvelle cible — rien à réimporter.
+                            </p>
+                          </div>
+                        )}
                         {confirming && (
                           <div className="flex items-center justify-between mt-2" style={{ paddingTop: 8, borderTop: `1px dashed ${C.red}` }}>
                             <span style={{ fontSize: 11, color: C.red, fontWeight: 500 }}>
