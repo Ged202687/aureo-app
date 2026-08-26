@@ -372,10 +372,11 @@ const ROLE_DEFAULT_TABS = {
   super_admin: ["dashboard", "queue", "recherche", "presence", "export", "import", "campagnes", "utilisateurs", "rules"],
   admin: ["dashboard", "queue", "recherche", "presence", "export", "import", "campagnes", "utilisateurs", "rules"],
   superviseur: ["dashboard", "queue", "recherche", "presence", "export"],
-  coach: ["dashboard", "export"],
+  coach: ["poste", "dashboard", "export"],
   agent: ["poste"],
 };
 const TAB_DEFS = [
+  { id: "poste", label: "Poste de travail", icon: Inbox },
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { id: "queue", label: "File d'attente", icon: Users },
   { id: "recherche", label: "Recherche", icon: Search },
@@ -394,7 +395,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const isSuperviseur = profil?.role === "superviseur";
   const isCoach = profil?.role === "coach";
   const [role, setRole] = useState(isAdmin ? "admin" : isSuperviseur ? "superviseur" : isCoach ? "coach" : "agent");
-  const [adminTab, setAdminTab] = useState("dashboard");
+  const [adminTab, setAdminTab] = useState((ROLE_DEFAULT_TABS[profil?.role] || ["dashboard"])[0]);
   const [tree, setTree] = useState([]);
   const elapsed = useElapsed(connectedAt);
   const [statutBusy, setStatutBusy] = useState(false);
@@ -584,6 +585,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />
           ) : (
             <>
+              {adminTab === "poste" && visibleTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
               {adminTab === "dashboard" && visibleTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} />}
               {adminTab === "queue" && visibleTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && visibleTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} />}
@@ -1445,7 +1447,7 @@ function PresencePanel({ accessToken }) {
       const startOfDay = new Date(date + "T00:00:00");
       const endOfDay = new Date(startOfDay.getTime() + 24 * 3600 * 1000);
       const [profils, temps, pauseTypes, pauseDetails, historique] = await Promise.all([
-        supaRest("profils?select=id,nom,role,matricule&role=in.(agent,superviseur)&order=nom.asc", { accessToken }),
+        supaRest("profils?select=id,nom,role,matricule&role=in.(agent,superviseur,coach)&order=nom.asc", { accessToken }),
         supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${date}`, { accessToken }),
         supaRest("pause_types?select=*&order=ordre.asc", { accessToken }),
         supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}`, { accessToken }),
@@ -1916,7 +1918,7 @@ function ImportPanel({ accessToken, bump }) {
         supaRest("campagnes?select=*&actif=eq.true&order=created_at.desc", { accessToken }),
         supaRest("lots?select=*&order=created_at.desc", { accessToken }),
         supaRest("groupes_agents?select=*&order=nom.asc", { accessToken }),
-        supaRest("profils?select=id,nom&role=eq.agent&order=nom.asc", { accessToken }),
+        supaRest("profils?select=id,nom&role=in.(agent,coach)&order=nom.asc", { accessToken }),
       ]);
       setCampagnes(c); setLots(l); setGroupes(g); setAgents(a);
       if (c.length > 0 && !campagneId) setCampagneId(c[0].id);
@@ -2171,7 +2173,7 @@ function CampaignsPanel({ accessToken }) {
         supaRest("campagnes?select=*&order=created_at.desc", { accessToken }),
         supaRest("lots?select=*&order=created_at.desc", { accessToken }),
         supaRest("groupes_agents?select=*&order=created_at.desc", { accessToken }),
-        supaRest("profils?select=id,nom&role=eq.agent&order=nom.asc", { accessToken }),
+        supaRest("profils?select=id,nom&role=in.(agent,coach)&order=nom.asc", { accessToken }),
         supaRest("groupes_agents_membres?select=*", { accessToken }),
       ]);
       setCampagnes(c); setLots(l); setGroupes(g); setAgents(a); setMembres(m);
