@@ -8,7 +8,7 @@ import {
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw,
 } from "lucide-react";
-
+ 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
 
 const SUPABASE_URL = "https://fipvndiueabrehsmqxth.supabase.co";
