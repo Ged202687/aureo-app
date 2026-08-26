@@ -1965,6 +1965,7 @@ function ImportPanel({ accessToken, bump }) {
         ? { campagne_id: campagneId, nom, cible_type: "agent", agent_id: newLotCibleId }
         : { campagne_id: campagneId, nom, cible_type: "groupe", groupe_id: newLotCibleId };
       const [row] = await supaRest("lots", { method: "POST", accessToken, body });
+      await rpc("admin_ajouter_cible_lot", accessToken, { p_lot_id: row.id, p_cible_type: newLotCibleType, p_cible_id: newLotCibleId });
       setNewLotNom(""); setNewLotCibleId(""); setShowNewLot(false);
       await loadRefData();
       setLotId(row.id);
@@ -2165,6 +2166,7 @@ function CampaignsPanel({ accessToken }) {
   const [subTab, setSubTab] = useState("campagnes"); // campagnes | groupes
   const [campagnes, setCampagnes] = useState(null);
   const [lots, setLots] = useState(null);
+  const [lotsCibles, setLotsCibles] = useState(null);
   const [groupes, setGroupes] = useState(null);
   const [agents, setAgents] = useState(null);
   const [membres, setMembres] = useState(null);
@@ -2174,21 +2176,22 @@ function CampaignsPanel({ accessToken }) {
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, l, g, a, m] = await Promise.all([
+      const [c, l, lc, g, a, m] = await Promise.all([
         supaRest("campagnes?select=*&order=created_at.desc", { accessToken }),
         supaRest("lots?select=*&order=created_at.desc", { accessToken }),
+        supaRest("lots_cibles?select=*", { accessToken }),
         supaRest("groupes_agents?select=*&order=created_at.desc", { accessToken }),
         supaRest("profils?select=id,nom&role=in.(agent,coach)&order=nom.asc", { accessToken }),
         supaRest("groupes_agents_membres?select=*", { accessToken }),
       ]);
-      setCampagnes(c); setLots(l); setGroupes(g); setAgents(a); setMembres(m);
+      setCampagnes(c); setLots(l); setLotsCibles(lc); setGroupes(g); setAgents(a); setMembres(m);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
   if (error) return <ErrorBlock message={error} />;
-  if (!campagnes || !lots || !groupes || !agents || !membres) return <CenterLoader />;
+  if (!campagnes || !lots || !lotsCibles || !groupes || !agents || !membres) return <CenterLoader />;
 
   return (
     <div>
@@ -2196,7 +2199,7 @@ function CampaignsPanel({ accessToken }) {
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Campagnes</h1>
           <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
-            Une campagne regroupe des lots de fiches ; chaque lot est attribué à un agent ou à un groupe.
+            Une campagne regroupe des lots de fiches ; chaque lot peut être partagé par plusieurs agents ou groupes.
           </p>
         </div>
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 4 }} className="flex gap-1">
@@ -2213,7 +2216,7 @@ function CampaignsPanel({ accessToken }) {
 
       {subTab === "campagnes" ? (
         <CampagnesTab
-          accessToken={accessToken} campagnes={campagnes} lots={lots} groupes={groupes} agents={agents}
+          accessToken={accessToken} campagnes={campagnes} lots={lots} lotsCibles={lotsCibles} groupes={groupes} agents={agents}
           selected={selectedCampagne} setSelected={setSelectedCampagne} reload={loadAll}
         />
       ) : (
@@ -2226,7 +2229,7 @@ function CampaignsPanel({ accessToken }) {
   );
 }
 
-function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected, setSelected, reload }) {
+function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agents, selected, setSelected, reload }) {
   const [showNew, setShowNew] = useState(false);
   const [nom, setNom] = useState("");
   const [description, setDescription] = useState("");
@@ -2249,10 +2252,11 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
   const [deletingLotId, setDeletingLotId] = useState(null);
   const [deleteInfo, setDeleteInfo] = useState(null);
 
-  const [editingCibleLotId, setEditingCibleLotId] = useState(null);
-  const [editCibleType, setEditCibleType] = useState("agent");
-  const [editCibleId, setEditCibleId] = useState("");
+  const [addingCibleLotId, setAddingCibleLotId] = useState(null);
+  const [newCibleType, setNewCibleType] = useState("agent");
+  const [newCibleId, setNewCibleId] = useState("");
   const [savingCible, setSavingCible] = useState(false);
+  const [removingCibleId, setRemovingCibleId] = useState(null);
 
   async function deleteLot(lotId) {
     setDeletingLotId(lotId); setError(null); setDeleteInfo(null);
@@ -2264,24 +2268,29 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
     } catch (e) { setError(e.message); } finally { setDeletingLotId(null); }
   }
 
-  function startEditCible(l) {
-    setEditingCibleLotId(l.id);
-    setEditCibleType(l.cible_type);
-    setEditCibleId(l.cible_type === "agent" ? l.agent_id : l.groupe_id);
+  function startAddCible(l) {
+    setAddingCibleLotId(l.id);
+    setNewCibleType("agent");
+    setNewCibleId("");
     setConfirmDeleteLotId(null);
   }
 
-  async function saveCible(lotId) {
-    if (!editCibleId) return;
+  async function addCible(lotId) {
+    if (!newCibleId) return;
     setSavingCible(true); setError(null);
     try {
-      const body = editCibleType === "agent"
-        ? { cible_type: "agent", agent_id: editCibleId, groupe_id: null }
-        : { cible_type: "groupe", groupe_id: editCibleId, agent_id: null };
-      await supaRest(`lots?id=eq.${lotId}`, { method: "PATCH", accessToken, body });
-      setEditingCibleLotId(null);
+      await rpc("admin_ajouter_cible_lot", accessToken, { p_lot_id: lotId, p_cible_type: newCibleType, p_cible_id: newCibleId });
+      setAddingCibleLotId(null);
       reload();
     } catch (e) { setError(e.message); } finally { setSavingCible(false); }
+  }
+
+  async function removeCible(lotCibleId) {
+    setRemovingCibleId(lotCibleId); setError(null);
+    try {
+      await rpc("admin_retirer_cible_lot", accessToken, { p_lot_cible_id: lotCibleId });
+      reload();
+    } catch (e) { setError(e.message); } finally { setRemovingCibleId(null); }
   }
 
   async function createCampagne() {
@@ -2314,7 +2323,8 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
       const body = attachCibleType === "agent"
         ? { campagne_id: campagneId, nom: attachNom.trim(), cible_type: "agent", agent_id: attachCibleId }
         : { campagne_id: campagneId, nom: attachNom.trim(), cible_type: "groupe", groupe_id: attachCibleId };
-      await supaRest("lots", { method: "POST", accessToken, body });
+      const [row] = await supaRest("lots", { method: "POST", accessToken, body });
+      await rpc("admin_ajouter_cible_lot", accessToken, { p_lot_id: row.id, p_cible_type: attachCibleType, p_cible_id: attachCibleId });
       setAttachNom(""); setAttachCibleId(""); setShowAttach(false);
       reload();
     } catch (e) { setError(e.message); } finally { setAttaching(false); }
@@ -2467,30 +2477,43 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
               ) : (
                 <div className="flex flex-col gap-2">
                   {lotsCourants.map((l) => {
-                    const cibleNom = l.cible_type === "agent" ? agents.find((a) => a.id === l.agent_id)?.nom : groupes.find((g) => g.id === l.groupe_id)?.nom;
+                    const cibles = lotsCibles.filter((lc) => lc.lot_id === l.id);
                     const nbFiches = fichesParLot[l.id];
                     const confirming = confirmDeleteLotId === l.id;
-                    const editingCible = editingCibleLotId === l.id;
-                    const editCibleOptions = editCibleType === "agent" ? agents : groupes;
+                    const addingCible = addingCibleLotId === l.id;
+                    const newCibleOptions = newCibleType === "agent" ? agents : groupes;
                     return (
                       <div key={l.id} style={{ padding: "10px 12px", background: confirming ? C.redSoft : C.canvas, borderRadius: 8 }}>
                         <div className="flex items-center justify-between">
-                          <div>
-                            <div style={{ fontSize: 12.5, fontWeight: 600 }}>{l.nom}</div>
-                            <div className="flex items-center gap-1.5" style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                              {l.cible_type === "agent" ? <UserCircle2 size={11} /> : <UsersRound size={11} />}
-                              {cibleNom || "?"}
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 5 }}>{l.nom}</div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {cibles.length === 0 ? (
+                                <span style={{ fontSize: 11, color: C.mutedSoft, fontStyle: "italic" }}>Aucune cible — personne ne recevra ces fiches</span>
+                              ) : cibles.map((c) => {
+                                const nomCible = c.cible_type === "agent" ? agents.find((a) => a.id === c.agent_id)?.nom : groupes.find((g) => g.id === c.groupe_id)?.nom;
+                                return (
+                                  <span key={c.id} className="flex items-center gap-1.5" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 999, padding: "3px 8px 3px 10px", fontSize: 11 }}>
+                                    {c.cible_type === "agent" ? <UserCircle2 size={10} /> : <UsersRound size={10} />}
+                                    {nomCible || "?"}
+                                    <button onClick={() => removeCible(c.id)} disabled={removingCibleId === c.id} title="Retirer cette cible"
+                                      style={{ background: "none", border: "none", padding: 1, display: "flex" }}>
+                                      <X size={10} color={C.mutedSoft} />
+                                    </button>
+                                  </span>
+                                );
+                              })}
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
                             <span style={{ fontSize: 11, color: C.mutedSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
                               {nbFiches === undefined ? "…" : nbFiches === null ? "—" : `${nbFiches} fiche${nbFiches !== 1 ? "s" : ""}`}
                             </span>
-                            {!confirming && !editingCible && (
+                            {!confirming && !addingCible && (
                               <>
-                                <button onClick={() => startEditCible(l)} title="Modifier la cible (agent/groupe)"
+                                <button onClick={() => startAddCible(l)} title="Ajouter une cible (agent/groupe)"
                                   style={{ background: "none", border: "none", padding: 4 }}>
-                                  <RefreshCw size={13} color={C.mutedSoft} />
+                                  <Plus size={13} color={C.mutedSoft} />
                                 </button>
                                 <button onClick={() => setConfirmDeleteLotId(l.id)} title="Supprimer ce lot et ses fiches"
                                   style={{ background: "none", border: "none", padding: 4 }}>
@@ -2500,34 +2523,34 @@ function CampagnesTab({ accessToken, campagnes, lots, groupes, agents, selected,
                             )}
                           </div>
                         </div>
-                        {editingCible && (
+                        {addingCible && (
                           <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.border}` }}>
                             <div className="flex items-center gap-2 mb-2">
                               <div style={{ background: C.surface, borderRadius: 7, padding: 3, border: `1px solid ${C.border}` }} className="flex gap-1">
                                 {[{ id: "agent", label: "Agent" }, { id: "groupe", label: "Groupe" }].map((t) => (
-                                  <button key={t.id} onClick={() => { setEditCibleType(t.id); setEditCibleId(""); }}
-                                    style={{ padding: "5px 11px", borderRadius: 5, border: "none", background: editCibleType === t.id ? C.ink : "transparent", color: editCibleType === t.id ? "#fff" : C.muted, fontSize: 11.5, fontWeight: 600 }}>
+                                  <button key={t.id} onClick={() => { setNewCibleType(t.id); setNewCibleId(""); }}
+                                    style={{ padding: "5px 11px", borderRadius: 5, border: "none", background: newCibleType === t.id ? C.ink : "transparent", color: newCibleType === t.id ? "#fff" : C.muted, fontSize: 11.5, fontWeight: 600 }}>
                                     {t.label}
                                   </button>
                                 ))}
                               </div>
-                              <select value={editCibleId || ""} onChange={(e) => setEditCibleId(e.target.value)}
+                              <select value={newCibleId} onChange={(e) => setNewCibleId(e.target.value)}
                                 style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, background: C.surface }}>
-                                <option value="">Choisir {editCibleType === "agent" ? "un agent" : "un groupe"}…</option>
-                                {editCibleOptions.map((o) => <option key={o.id} value={o.id}>{o.nom}</option>)}
+                                <option value="">Choisir {newCibleType === "agent" ? "un agent" : "un groupe"}…</option>
+                                {newCibleOptions.map((o) => <option key={o.id} value={o.id}>{o.nom}</option>)}
                               </select>
                             </div>
                             <div className="flex items-center gap-2">
-                              <button onClick={() => saveCible(l.id)} disabled={savingCible || !editCibleId}
+                              <button onClick={() => addCible(l.id)} disabled={savingCible || !newCibleId}
                                 style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
-                                {savingCible && <Loader2 size={11} className="animate-spin" />} Enregistrer
+                                {savingCible && <Loader2 size={11} className="animate-spin" />} Ajouter
                               </button>
-                              <button onClick={() => setEditingCibleLotId(null)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5 }}>
+                              <button onClick={() => setAddingCibleLotId(null)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5 }}>
                                 Annuler
                               </button>
                             </div>
                             <p style={{ fontSize: 10.5, color: C.mutedSoft, marginTop: 6 }}>
-                              Les fiches déjà présentes dans ce lot suivent la nouvelle cible — rien à réimporter.
+                              S'ajoute aux cibles déjà en place — rien n'est retiré ni réimporté.
                             </p>
                           </div>
                         )}
