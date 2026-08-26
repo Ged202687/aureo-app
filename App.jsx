@@ -369,7 +369,7 @@ function useElapsed(since) {
 }
 
 const ROLE_DEFAULT_TABS = {
-  super_admin: ["dashboard", "queue", "recherche", "presence", "export", "import", "campagnes", "utilisateurs", "rules"],
+  super_admin: ["dashboard", "queue", "recherche", "presence", "export", "import", "campagnes", "equipes", "utilisateurs", "rules"],
   admin: ["dashboard", "queue", "recherche", "presence", "export", "import", "campagnes", "utilisateurs", "rules"],
   superviseur: ["dashboard", "queue", "recherche", "presence", "export"],
   coach: ["poste", "dashboard", "export"],
@@ -384,6 +384,7 @@ const TAB_DEFS = [
   { id: "export", label: "Export", icon: FileSpreadsheet },
   { id: "import", label: "Import", icon: Upload },
   { id: "campagnes", label: "Campagnes", icon: Megaphone },
+  { id: "equipes", label: "Équipes", icon: UsersRound },
   { id: "utilisateurs", label: "Utilisateurs", icon: UserCircle2 },
   { id: "rules", label: "Règles de qualification", icon: ListChecks },
 ];
@@ -593,6 +594,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "export" && visibleTabs.has("export") && <ExportPanel accessToken={accessToken} />}
               {adminTab === "import" && visibleTabs.has("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
               {adminTab === "campagnes" && visibleTabs.has("campagnes") && <CampaignsPanel accessToken={accessToken} />}
+              {adminTab === "equipes" && visibleTabs.has("equipes") && <EquipesPanel accessToken={accessToken} />}
               {adminTab === "utilisateurs" && visibleTabs.has("utilisateurs") && <UsersPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
               {adminTab === "rules" && visibleTabs.has("rules") && <Rules accessToken={accessToken} tree={tree} reload={loadTree} />}
             </>
@@ -1446,8 +1448,11 @@ function PresencePanel({ accessToken }) {
     try {
       const startOfDay = new Date(date + "T00:00:00");
       const endOfDay = new Date(startOfDay.getTime() + 24 * 3600 * 1000);
+      const perimetre = await rpc("mon_perimetre_personnes", accessToken, {});
+      const idsVisibles = (perimetre || []).map((r) => r.profil_id);
+      if (idsVisibles.length === 0) { setRows([]); return; }
       const [profils, temps, pauseTypes, pauseDetails, historique] = await Promise.all([
-        supaRest("profils?select=id,nom,role,matricule&role=in.(agent,superviseur,coach)&order=nom.asc", { accessToken }),
+        supaRest(`profils?select=id,nom,role,matricule&role=in.(agent,superviseur,coach)&id=in.(${idsVisibles.join(",")})&order=nom.asc`, { accessToken }),
         supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${date}`, { accessToken }),
         supaRest("pause_types?select=*&order=ordre.asc", { accessToken }),
         supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}`, { accessToken }),
@@ -2590,6 +2595,224 @@ function GroupesTab({ accessToken, groupes, agents, membres, selected, setSelect
 }
 
 
+/* ---------------------------------- super admin : équipes ---------------------------------- */
+
+function EquipesPanel({ accessToken }) {
+  const [equipes, setEquipes] = useState(null);
+  const [coachs, setCoachs] = useState(null);
+  const [agents, setAgents] = useState(null);
+  const [error, setError] = useState(null);
+  const [selected, setSelected] = useState(null);
+
+  const [showNew, setShowNew] = useState(false);
+  const [nomNouvelle, setNomNouvelle] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const [editingNom, setEditingNom] = useState(false);
+  const [editNomValue, setEditNomValue] = useState("");
+  const [savingNom, setSavingNom] = useState(false);
+
+  const [assigningCoach, setAssigningCoach] = useState(false);
+  const [savingCoach, setSavingCoach] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [eq, co, ag] = await Promise.all([
+        supaRest("equipes?select=*&order=created_at.desc", { accessToken }),
+        supaRest("profils?select=id,nom&role=eq.coach&order=nom.asc", { accessToken }),
+        supaRest("profils?select=id,nom,equipe_id&role=eq.agent&order=nom.asc", { accessToken }),
+      ]);
+      setEquipes(eq); setCoachs(co); setAgents(ag);
+    } catch (e) { setError(e.message); }
+  }, [accessToken]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function createEquipe() {
+    if (!nomNouvelle.trim()) return;
+    setCreating(true); setError(null);
+    try {
+      await rpc("super_admin_creer_equipe", accessToken, { p_nom: nomNouvelle.trim() });
+      setNomNouvelle(""); setShowNew(false);
+      load();
+    } catch (e) { setError(e.message); } finally { setCreating(false); }
+  }
+
+  async function renommerEquipe(id) {
+    if (!editNomValue.trim()) return;
+    setSavingNom(true); setError(null);
+    try {
+      await rpc("super_admin_renommer_equipe", accessToken, { p_equipe_id: id, p_nom: editNomValue.trim() });
+      setEditingNom(false);
+      load();
+    } catch (e) { setError(e.message); } finally { setSavingNom(false); }
+  }
+
+  async function assignerCoach(equipeId, coachId) {
+    setSavingCoach(true); setError(null);
+    try {
+      await rpc("super_admin_assigner_coach_equipe", accessToken, { p_equipe_id: equipeId, p_coach_id: coachId || null });
+      setAssigningCoach(false);
+      load();
+    } catch (e) { setError(e.message); } finally { setSavingCoach(false); }
+  }
+
+  async function rattacherAgent(agentId, equipeId) {
+    setError(null);
+    try {
+      await rpc("super_admin_rattacher", accessToken, { p_profil_id: agentId, p_champ: "equipe_id", p_cible_id: equipeId || null });
+      load();
+    } catch (e) { setError(e.message); }
+  }
+
+  const current = equipes?.find((e) => e.id === selected) || null;
+  const agentsDeLequipe = current ? (agents || []).filter((a) => a.equipe_id === current.id) : [];
+  const agentsSansEquipe = (agents || []).filter((a) => !a.equipe_id);
+
+  if (!equipes || !coachs || !agents) return <CenterLoader />;
+
+  return (
+    <div>
+      <header className="mb-6">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Équipes</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+          Chaque équipe regroupe des agents et est rattachée à un coach. Renommer une équipe n'affecte pas ses agents.
+        </p>
+      </header>
+
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20 }}>
+        <div>
+          <button onClick={() => setShowNew((v) => !v)}
+            style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: C.ink, color: "#fff", border: "none", borderRadius: 9, padding: "10px 0", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+            <Plus size={14} /> Nouvelle équipe
+          </button>
+
+          {showNew && (
+            <div style={{ background: C.surface, border: `1.5px solid ${C.ink}`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+              <input value={nomNouvelle} onChange={(e) => setNomNouvelle(e.target.value)} placeholder="Nom de l'équipe…" autoFocus
+                style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 9px", fontSize: 12.5, marginBottom: 8 }} />
+              <button onClick={createEquipe} disabled={creating}
+                style={{ width: "100%", background: C.amber, color: C.ink, border: "none", borderRadius: 7, padding: "8px 0", fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                {creating && <Loader2 size={12} className="animate-spin" />} Créer
+              </button>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            {equipes.length === 0 && <p style={{ fontSize: 12.5, color: C.muted }}>Aucune équipe créée.</p>}
+            {equipes.map((eq) => {
+              const nbAgents = agents.filter((a) => a.equipe_id === eq.id).length;
+              const coachNom = coachs.find((c) => c.id === eq.coach_id)?.nom;
+              const isActive = selected === eq.id;
+              return (
+                <button key={eq.id} onClick={() => { setSelected(eq.id); setEditingNom(false); setAssigningCoach(false); }}
+                  style={{ textAlign: "left", background: isActive ? C.ink : C.surface, color: isActive ? "#fff" : C.text, border: `1px solid ${isActive ? C.ink : C.border}`, borderRadius: 10, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{eq.nom}</div>
+                  <div style={{ fontSize: 11, color: isActive ? "#A6ADBA" : C.muted, marginTop: 2 }}>
+                    {nbAgents} agent{nbAgents !== 1 ? "s" : ""} · {coachNom || "sans coach"}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          {!current ? (
+            <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 40, textAlign: "center", color: C.muted, fontSize: 13 }}>
+              Sélectionnez une équipe pour la gérer.
+            </div>
+          ) : (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
+              <div className="flex items-center gap-2">
+                {!editingNom ? (
+                  <>
+                    <h3 className="disp" style={{ fontSize: 16, fontWeight: 700 }}>{current.nom}</h3>
+                    <button onClick={() => { setEditingNom(true); setEditNomValue(current.nom); }} title="Renommer"
+                      style={{ background: "none", border: "none", padding: 2 }}>
+                      <ListChecks size={13} color={C.mutedSoft} />
+                    </button>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2" style={{ flex: 1 }}>
+                    <input value={editNomValue} onChange={(e) => setEditNomValue(e.target.value)} autoFocus
+                      style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 13.5, fontWeight: 600 }} />
+                    <button onClick={() => renommerEquipe(current.id)} disabled={savingNom}
+                      style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 10px" }}>
+                      {savingNom ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                    </button>
+                    <button onClick={() => setEditingNom(false)} style={{ background: "none", border: "none", color: C.mutedSoft, padding: 4 }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 4 }}>
+                Renommer une équipe n'a aucun effet sur ses agents : le rattachement repose sur l'identifiant, pas sur le nom.
+              </p>
+
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
+                <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11.5, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  <UserCircle2 size={13} /> Coach responsable
+                </div>
+                {!assigningCoach ? (
+                  <div className="flex items-center gap-2">
+                    <span style={{ fontSize: 13 }}>{coachs.find((c) => c.id === current.coach_id)?.nom || "Aucun coach assigné"}</span>
+                    <button onClick={() => setAssigningCoach(true)} style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 9px", fontSize: 11.5, color: C.text }}>
+                      Modifier
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <select defaultValue={current.coach_id || ""} onChange={(e) => assignerCoach(current.id, e.target.value)} disabled={savingCoach}
+                      style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 9px", fontSize: 12.5, background: C.surface, maxWidth: 260 }}>
+                      <option value="">Aucun coach</option>
+                      {coachs.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+                    </select>
+                    <button onClick={() => setAssigningCoach(false)} style={{ background: "none", border: "none", color: C.mutedSoft, fontSize: 11.5 }}>Fermer</button>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
+                <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11.5, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  <Users size={13} /> Agents de l'équipe ({agentsDeLequipe.length})
+                </div>
+                {agentsDeLequipe.length === 0 ? (
+                  <p style={{ fontSize: 12.5, color: C.mutedSoft, marginBottom: 10 }}>Aucun agent dans cette équipe pour le moment.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {agentsDeLequipe.map((a) => (
+                      <span key={a.id} className="flex items-center gap-2" style={{ background: C.canvas, borderRadius: 999, padding: "6px 6px 6px 12px", fontSize: 12.5 }}>
+                        {a.nom}
+                        <button onClick={() => rattacherAgent(a.id, null)} title="Retirer de l'équipe" style={{ background: "none", border: "none", padding: 3 }}>
+                          <X size={11} color={C.mutedSoft} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {agentsSansEquipe.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <select defaultValue="" onChange={(e) => { if (e.target.value) { rattacherAgent(e.target.value, current.id); e.target.value = ""; } }}
+                      style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 9px", fontSize: 12.5, background: C.surface, maxWidth: 260 }}>
+                      <option value="">+ Ajouter un agent sans équipe…</option>
+                      {agentsSansEquipe.map((a) => <option key={a.id} value={a.id}>{a.nom}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------- admin : utilisateurs (création de comptes) ---------------------------------- */
 
 function UsersPanel({ accessToken, isSuperAdmin }) {
@@ -2613,9 +2836,26 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
   const [permsEnCours, setPermsEnCours] = useState({ effective: new Set(), overrides: {} });
   const [permsBusy, setPermsBusy] = useState(false);
 
+  const [superviseursDispo, setSuperviseursDispo] = useState([]);
+  const [adminsDispo, setAdminsDispo] = useState([]);
+  const [rattachBusy, setRattachBusy] = useState(false);
+
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    (async () => {
+      try {
+        const [sups, adms] = await Promise.all([
+          supaRest("profils?select=id,nom&role=eq.superviseur&order=nom.asc", { accessToken }),
+          supaRest("profils?select=id,nom&role=in.(admin,super_admin)&order=nom.asc", { accessToken }),
+        ]);
+        setSuperviseursDispo(sups); setAdminsDispo(adms);
+      } catch {}
+    })();
+  }, [accessToken, isSuperAdmin]);
+
   const load = useCallback(async () => {
     try {
-      const rows = await supaRest("profils?select=id,nom,login,role,statut,matricule,actif&role=in.(agent,superviseur,coach,admin)&order=nom.asc", { accessToken });
+      const rows = await supaRest("profils?select=id,nom,login,role,statut,matricule,actif,superviseur_id,admin_id&role=in.(agent,superviseur,coach,admin)&order=nom.asc", { accessToken });
       setComptes(rows);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
@@ -2701,6 +2941,14 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
         return { effective, overrides };
       });
     } catch (e) { setError(e.message); } finally { setPermsBusy(false); }
+  }
+
+  async function rattacherHierarchie(cible, champ, cibleId) {
+    setRattachBusy(true); setError(null);
+    try {
+      await rpc("super_admin_rattacher", accessToken, { p_profil_id: cible.id, p_champ: champ, p_cible_id: cibleId || null });
+      load();
+    } catch (e) { setError(e.message); } finally { setRattachBusy(false); }
   }
 
   const roleOptions = isSuperAdmin
@@ -2911,6 +3159,38 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
                 );
               })}
             </div>
+
+            {(cible.role === "coach" || cible.role === "superviseur") && (
+              <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
+                <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11.5, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  <UsersRound size={13} /> Rattachement hiérarchique
+                </div>
+                {cible.role === "coach" ? (
+                  <div className="flex items-center gap-2">
+                    <span style={{ fontSize: 12.5, color: C.muted, whiteSpace: "nowrap" }}>Superviseur :</span>
+                    <select value={cible.superviseur_id || ""} disabled={rattachBusy}
+                      onChange={(ev) => rattacherHierarchie(cible, "superviseur_id", ev.target.value)}
+                      style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12.5, background: C.surface }}>
+                      <option value="">Aucun</option>
+                      {superviseursDispo.map((s) => <option key={s.id} value={s.id}>{s.nom}</option>)}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span style={{ fontSize: 12.5, color: C.muted, whiteSpace: "nowrap" }}>Admin :</span>
+                    <select value={cible.admin_id || ""} disabled={rattachBusy}
+                      onChange={(ev) => rattacherHierarchie(cible, "admin_id", ev.target.value)}
+                      style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12.5, background: C.surface }}>
+                      <option value="">Aucun</option>
+                      {adminsDispo.map((a) => <option key={a.id} value={a.id}>{a.nom}</option>)}
+                    </select>
+                  </div>
+                )}
+                <p style={{ fontSize: 10.5, color: C.mutedSoft, marginTop: 6 }}>
+                  Détermine les stats visibles par ce compte (et, pour un admin, la présence de ses superviseurs).
+                </p>
+              </div>
+            )}
           </div>
         );
       })()}
