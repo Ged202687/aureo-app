@@ -1303,9 +1303,9 @@ function Dashboard({ accessToken, refreshFlag }) {
   useEffect(() => {
     (async () => {
       try {
-        const rows = await supaRest("clients?select=statut", { accessToken });
-        const c = { disponible: 0, en_cours: 0, planifie: 0, archive: 0, total: rows.length };
-        rows.forEach((r) => { c[r.statut] = (c[r.statut] || 0) + 1; });
+        const statutRows = await supaRest("vue_compte_statuts_clients?select=*", { accessToken });
+        const c = { disponible: 0, en_cours: 0, planifie: 0, archive: 0, total: 0 };
+        statutRows.forEach((r) => { c[r.statut] = r.total; c.total += r.total; });
         setCounts(c);
 
         const rappels = await supaRest("clients?select=agent_id,visible_apres&statut=eq.planifie&agent_id=not.is.null", { accessToken });
