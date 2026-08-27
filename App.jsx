@@ -1073,13 +1073,13 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
       try {
         const membres = await supaRest(`groupes_agents_membres?select=groupe_id&agent_id=eq.${agentId}`, { accessToken });
         const groupeIds = membres.map((m) => m.groupe_id);
-        const [lotsDirects, lotsViaGroupe] = await Promise.all([
-          supaRest(`lots?select=id,nom,campagne_id,campagnes(nom)&agent_id=eq.${agentId}`, { accessToken }),
-          groupeIds.length > 0
-            ? supaRest(`lots?select=id,nom,campagne_id,campagnes(nom)&groupe_id=in.(${groupeIds.join(",")})`, { accessToken })
-            : Promise.resolve([]),
-        ]);
-        const tous = [...lotsDirects, ...lotsViaGroupe];
+        const orParts = [`and(cible_type.eq.agent,agent_id.eq.${agentId})`];
+        if (groupeIds.length > 0) orParts.push(`and(cible_type.eq.groupe,groupe_id.in.(${groupeIds.join(",")}))`);
+        const cibles = await supaRest(`lots_cibles?select=lot_id&or=(${orParts.join(",")})`, { accessToken });
+        const lotIds = [...new Set(cibles.map((c) => c.lot_id))];
+        const tous = lotIds.length > 0
+          ? await supaRest(`lots?select=id,nom,campagne_id,campagnes(nom)&id=in.(${lotIds.join(",")})`, { accessToken })
+          : [];
         setMyLots(tous);
         if (tous.length === 1) setSelectedLotId(tous[0].id);
       } catch {
