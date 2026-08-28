@@ -634,6 +634,15 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const [view, setView] = useState("poste"); // poste | recherche
   const [fiche, setFiche] = useState(null);
   const [pulling, setPulling] = useState(false);
+  const ficheStartRef = useRef(null);
+  const [, ficheTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => ficheTick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
+  const ficheElapsedStr = (() => {
+    if (!ficheStartRef.current) return "00:00";
+    const s = Math.floor((Date.now() - ficheStartRef.current) / 1000);
+    const m = Math.floor(s / 60), sec = s % 60;
+    return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  })();
   const [cat, setCat] = useState(null);
   const [sub, setSub] = useState(null);
   const [note, setNote] = useState("");
@@ -702,6 +711,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
   async function openFicheDirect(f) {
     setFiche(f);
+    ficheStartRef.current = f ? Date.now() : null;
     setCat(null); setSub(null); setNote(""); setLastOutcome(null); setLastQualif(null);
     setView("poste");
     if (f) {
@@ -721,6 +731,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       const result = await rpc("get_next_fiche", accessToken, {});
       const f = result && result.id ? result : null;
       setFiche(f);
+      ficheStartRef.current = f ? Date.now() : null;
       setCat(null); setSub(null); setNote("");
       if (f) {
         try {
@@ -737,13 +748,16 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   async function handleValidate() {
     const catObj = tree.find((t) => t.categorie === cat);
     const subObj = catObj.subs.find((s) => s.id === sub);
+    const dureeSecondes = ficheStartRef.current ? Math.round((Date.now() - ficheStartRef.current) / 1000) : null;
     setSubmitting(true); setError(null);
     try {
       await rpc("qualifier_fiche", accessToken, {
         p_client_id: fiche.id, p_type_qualification_id: subObj.id, p_commentaire: note || null,
+        p_duree_secondes: dureeSecondes,
       });
       setLastOutcome({ cat: catObj, sub: subObj });
       setFiche(null);
+      ficheStartRef.current = null;
       bump();
       loadStats();
     } catch (e) { setError(e.message); } finally { setSubmitting(false); }
@@ -866,6 +880,9 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                 {fiche.numero_box && <span style={{ color: "#6B7280" }}>Box {fiche.numero_box}</span>}
               </span>
               <span style={{ fontSize: 10.5, background: C.amber, color: C.ink, padding: "2px 8px", borderRadius: 999, fontWeight: 600 }}>EN COURS</span>
+            </div>
+            <div className="mono flex items-center gap-1.5" style={{ padding: "7px 18px", background: C.canvas, borderBottom: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.muted }}>
+              <Clock size={11} /> {ficheElapsedStr} sur cette fiche
             </div>
             <div className="px-5 py-5">
               <h2 className="disp" style={{ fontSize: 19, fontWeight: 700 }}>{fiche.nom}</h2>
@@ -1312,11 +1329,34 @@ function SearchPanel({ accessToken, tree }) {
 
 /* ---------------------------------- admin : dashboard ---------------------------------- */
 
+function debutPeriode(periode) {
+  const now = new Date();
+  if (periode === "jour") {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+  if (periode === "semaine") {
+    const jour = (now.getDay() + 6) % 7; // lundi = 0
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() - jour);
+  }
+  return new Date(now.getFullYear(), now.getMonth(), 1); // mois
+}
+function finPeriode(periode, debut) {
+  if (periode === "jour") return new Date(debut.getTime() + 24 * 3600 * 1000);
+  if (periode === "semaine") return new Date(debut.getTime() + 7 * 24 * 3600 * 1000);
+  return new Date(debut.getFullYear(), debut.getMonth() + 1, 1); // mois
+}
+function formatDuree(secondes) {
+  if (secondes === null || secondes === undefined) return "—";
+  const m = Math.floor(secondes / 60), s = Math.round(secondes % 60);
+  return `${m}min ${String(s).padStart(2, "0")}s`;
+}
+
 function Dashboard({ accessToken, refreshFlag }) {
   const [counts, setCounts] = useState(null);
   const [parAgent, setParAgent] = useState(null);
-  const [perf, setPerf] = useState(null); // { traitees, contacts, ventes }
+  const [perf, setPerf] = useState(null); // { traitees, contacts, ventes, dureeMoyenne }
   const [error, setError] = useState(null);
+  const [periode, setPeriode] = useState("jour"); // jour | semaine | mois
 
   useEffect(() => {
     (async () => {
@@ -1334,12 +1374,17 @@ function Dashboard({ accessToken, refreshFlag }) {
         })).sort((a, b) => b.enRetard - a.enRetard || b.total - a.total);
         setParAgent(list);
 
-        // Performance : qualifications réalisées, ventilées contact / vente (agrégation SQL)
-        const [perfRow] = await supaRest("vue_perf_globale?select=*", { accessToken });
-        setPerf({ traitees: perfRow?.traitees || 0, contacts: perfRow?.contacts || 0, ventes: perfRow?.ventes || 0 });
+        // Performance sur la période choisie (jour/semaine/mois), agrégation SQL scopée
+        const debut = debutPeriode(periode);
+        const fin = finPeriode(periode, debut);
+        const [perfRow] = await rpc("perf_periode", accessToken, { p_debut: debut.toISOString(), p_fin: fin.toISOString() });
+        setPerf({
+          traitees: perfRow?.traitees || 0, contacts: perfRow?.contacts || 0, ventes: perfRow?.ventes || 0,
+          dureeMoyenne: perfRow?.duree_moyenne_secondes ?? null,
+        });
       } catch (e) { setError(e.message); }
     })();
-  }, [accessToken, refreshFlag]);
+  }, [accessToken, refreshFlag, periode]);
 
   if (error) return <ErrorBlock message={error} />;
   if (!counts) return <CenterLoader />;
@@ -1357,10 +1402,23 @@ function Dashboard({ accessToken, refreshFlag }) {
 
   return (
     <div>
-      <header className="mb-7">
-        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Tableau de bord</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Données en direct depuis Supabase.</p>
+      <header className="mb-5 flex items-end justify-between">
+        <div>
+          <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Tableau de bord</h1>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Données en direct depuis Supabase.</p>
+        </div>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 4 }} className="flex gap-1">
+          {[{ id: "jour", label: "Jour" }, { id: "semaine", label: "Semaine" }, { id: "mois", label: "Mois" }].map((p) => (
+            <button key={p.id} onClick={() => setPeriode(p.id)}
+              style={{ padding: "7px 14px", borderRadius: 7, border: "none", background: periode === p.id ? C.ink : "transparent", color: periode === p.id ? "#fff" : C.muted, fontSize: 12.5, fontWeight: 600 }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
       </header>
+      <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: -12, marginBottom: 16 }}>
+        Le calendrier ne s'applique qu'à la performance ci-dessous (joignabilité, conversion, temps de traitement) — les compteurs de fiches reflètent toujours l'état actuel.
+      </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 16 }}>
         {stats.map((s) => (
           <div key={s.label} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
@@ -1371,7 +1429,7 @@ function Dashboard({ accessToken, refreshFlag }) {
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 24 }}>
         <div style={{ background: C.ink, borderRadius: 12, padding: 20 }}>
           <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
             <PhoneOff size={14} color="#A6ADBA" style={{ transform: "rotate(135deg)" }} />
@@ -1394,6 +1452,18 @@ function Dashboard({ accessToken, refreshFlag }) {
           </div>
           <div style={{ fontSize: 11.5, color: "#8B93A3", marginTop: 4 }}>
             {perf ? `${perf.ventes} vente${perf.ventes !== 1 ? "s" : ""} sur ${perf.contacts} contact${perf.contacts !== 1 ? "s" : ""}` : "…"}
+          </div>
+        </div>
+        <div style={{ background: C.ink, borderRadius: 12, padding: 20 }}>
+          <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+            <Clock size={14} color={C.teal} />
+            <span style={{ fontSize: 12, color: "#A6ADBA", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em" }}>Temps moyen / fiche</span>
+          </div>
+          <div className="disp mono" style={{ fontSize: 34, fontWeight: 700, color: C.teal }}>
+            {formatDuree(perf?.dureeMoyenne)}
+          </div>
+          <div style={{ fontSize: 11.5, color: "#8B93A3", marginTop: 4 }}>
+            {perf ? `Sur ${perf.traitees} fiche${perf.traitees !== 1 ? "s" : ""} qualifiée${perf.traitees !== 1 ? "s" : ""}` : "…"}
           </div>
         </div>
       </div>
@@ -1437,7 +1507,9 @@ function Dashboard({ accessToken, refreshFlag }) {
 /* ---------------------------------- admin/superviseur : présence ---------------------------------- */
 
 function PresencePanel({ accessToken }) {
+  const [vue, setVue] = useState("jour"); // jour | mois
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [mois, setMois] = useState(() => new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [rows, setRows] = useState(null);
   const [pauseTypesList, setPauseTypesList] = useState([]);
   const [error, setError] = useState(null);
@@ -1446,17 +1518,30 @@ function PresencePanel({ accessToken }) {
   const load = useCallback(async () => {
     setRows(null); setError(null);
     try {
-      const startOfDay = new Date(date + "T00:00:00");
-      const endOfDay = new Date(startOfDay.getTime() + 24 * 3600 * 1000);
+      let periodStart, periodEnd, jourGteFilter, jourLtFilter;
+      if (vue === "jour") {
+        periodStart = new Date(date + "T00:00:00");
+        periodEnd = new Date(periodStart.getTime() + 24 * 3600 * 1000);
+        jourGteFilter = date; jourLtFilter = date;
+      } else {
+        periodStart = new Date(mois + "-01T00:00:00");
+        periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 1);
+        jourGteFilter = periodStart.toISOString().slice(0, 10);
+        jourLtFilter = periodEnd.toISOString().slice(0, 10);
+      }
       const perimetre = await rpc("mon_perimetre_personnes", accessToken, {});
       const idsVisibles = (perimetre || []).map((r) => r.profil_id);
       if (idsVisibles.length === 0) { setRows([]); return; }
       const [profils, temps, pauseTypes, pauseDetails, historique] = await Promise.all([
         supaRest(`profils?select=id,nom,role,matricule&role=in.(agent,superviseur,coach)&id=in.(${idsVisibles.join(",")})&order=nom.asc`, { accessToken }),
-        supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${date}`, { accessToken }),
+        vue === "jour"
+          ? supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${jourGteFilter}`, { accessToken })
+          : supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=gte.${jourGteFilter}&jour=lt.${jourLtFilter}`, { accessToken }),
         supaRest("pause_types?select=*&order=ordre.asc", { accessToken }),
-        supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}`, { accessToken }),
-        supaRest(`statuts_historique?select=agent_id,statut,debut&debut=gte.${startOfDay.toISOString()}&debut=lt.${endOfDay.toISOString()}&order=debut.asc`, { accessToken }),
+        supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${periodStart.toISOString()}&debut=lt.${periodEnd.toISOString()}`, { accessToken }),
+        vue === "jour"
+          ? supaRest(`statuts_historique?select=agent_id,statut,debut&debut=gte.${periodStart.toISOString()}&debut=lt.${periodEnd.toISOString()}&order=debut.asc`, { accessToken })
+          : Promise.resolve([]), // "heure de connexion" n'a pas de sens agrégée sur un mois
       ]);
       setPauseTypesList(pauseTypes);
       const now = Date.now();
@@ -1467,7 +1552,7 @@ function PresencePanel({ accessToken }) {
       }
 
       const parAgent = profils.map((p) => {
-        const enProd = temps.find((t) => t.agent_id === p.id && t.statut === "en_prod")?.secondes || 0;
+        const enProd = temps.filter((t) => t.agent_id === p.id && t.statut === "en_prod").reduce((s, t) => s + t.secondes, 0);
         const details = pauseDetails.filter((d) => d.agent_id === p.id);
         const byType = {};
         for (const d of details) {
@@ -1490,7 +1575,7 @@ function PresencePanel({ accessToken }) {
       parAgent.sort((a, b) => b.presenceBrute - a.presenceBrute);
       setRows(parAgent);
     } catch (e) { setError(e.message); }
-  }, [accessToken, date]);
+  }, [accessToken, date, mois, vue]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1502,7 +1587,7 @@ function PresencePanel({ accessToken }) {
           Matricule: a.matricule,
           Agent: a.nom,
           Rôle: a.role,
-          "Heure de connexion": a.heureConnexion ? new Date(a.heureConnexion).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "",
+          ...(vue === "jour" ? { "Heure de connexion": a.heureConnexion ? new Date(a.heureConnexion).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "" } : {}),
           "Temps production": fmtDuration(a.enProd),
           "Temps production (h)": hoursDecimal(a.enProd),
         };
@@ -1519,7 +1604,7 @@ function PresencePanel({ accessToken }) {
       const ws = XLSX.utils.json_to_sheet(data);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Présence");
-      XLSX.writeFile(wb, `aureo_presence_${date}.xlsx`);
+      XLSX.writeFile(wb, `aureo_presence_${vue === "jour" ? date : mois}.xlsx`);
     } finally { setExporting(false); }
   }
 
@@ -1549,8 +1634,21 @@ function PresencePanel({ accessToken }) {
           <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, pauses par type et taux d'occupation par agent.</p>
         </div>
         <div className="flex items-center gap-2">
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+          <div style={{ background: C.canvas, borderRadius: 8, padding: 3 }} className="flex gap-1">
+            {[{ id: "jour", label: "Jour" }, { id: "mois", label: "Mois" }].map((v) => (
+              <button key={v.id} onClick={() => setVue(v.id)}
+                style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: vue === v.id ? C.ink : "transparent", color: vue === v.id ? "#fff" : C.muted, fontSize: 12, fontWeight: 600 }}>
+                {v.label}
+              </button>
+            ))}
+          </div>
+          {vue === "jour" ? (
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+          ) : (
+            <input type="month" value={mois} onChange={(e) => setMois(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+          )}
           <button onClick={exportExcel} disabled={!rows || rows.length === 0 || exporting}
             style={{ display: "flex", alignItems: "center", gap: 6, background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
             {exporting ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />} Exporter Excel
@@ -1598,7 +1696,7 @@ function PresencePanel({ accessToken }) {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead>
                   <tr style={{ background: C.canvas, textAlign: "left" }}>
-                    {["Agent", "Rôle", "Connexion", "Production", ...pauseTypesList.map((pt) => pt.nom), "Occupation"].map((h) => (
+                    {["Agent", "Rôle", ...(vue === "jour" ? ["Connexion"] : []), "Production", ...pauseTypesList.map((pt) => pt.nom), "Occupation"].map((h) => (
                       <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -1608,9 +1706,11 @@ function PresencePanel({ accessToken }) {
                     <tr key={a.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
                       <td style={{ padding: "10px 16px", fontWeight: 500, whiteSpace: "nowrap" }}>{a.nom}</td>
                       <td style={{ padding: "10px 16px", textTransform: "capitalize", color: C.muted }}>{a.role}</td>
-                      <td className="mono" style={{ padding: "10px 16px", color: C.muted, whiteSpace: "nowrap" }}>
-                        {a.heureConnexion ? new Date(a.heureConnexion).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "—"}
-                      </td>
+                      {vue === "jour" && (
+                        <td className="mono" style={{ padding: "10px 16px", color: C.muted, whiteSpace: "nowrap" }}>
+                          {a.heureConnexion ? new Date(a.heureConnexion).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "—"}
+                        </td>
+                      )}
                       <td className="mono" style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>{fmtDuration(a.enProd)}</td>
                       {pauseTypesList.map((pt) => {
                         const t = a.byType[pt.code];
@@ -2906,6 +3006,7 @@ function EquipesPanel({ accessToken }) {
 
 function UsersPanel({ accessToken, isSuperAdmin }) {
   const [comptes, setComptes] = useState(null);
+  const [roleFiltre, setRoleFiltre] = useState("tous");
   const [error, setError] = useState(null);
   const [nom, setNom] = useState("");
   const [login, setLogin] = useState("");
@@ -3118,7 +3219,28 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
 
       {comptes === null ? (
         <CenterLoader />
-      ) : (
+      ) : (() => {
+        const filtres = [
+          { id: "tous", label: "Tous" },
+          { id: "agent", label: "Agents" },
+          { id: "superviseur", label: "Superviseurs" },
+          { id: "coach", label: "Coachs" },
+          ...(isSuperAdmin ? [{ id: "admin", label: "Admins" }] : []),
+        ];
+        const comptesFiltres = roleFiltre === "tous" ? comptes : comptes.filter((c) => c.role === roleFiltre);
+        return (
+        <>
+        <div className="flex items-center gap-1 mb-3" style={{ background: C.canvas, borderRadius: 9, padding: 3, width: "fit-content" }}>
+          {filtres.map((f) => {
+            const count = f.id === "tous" ? comptes.length : comptes.filter((c) => c.role === f.id).length;
+            return (
+              <button key={f.id} onClick={() => setRoleFiltre(f.id)}
+                style={{ padding: "6px 13px", borderRadius: 6, border: "none", background: roleFiltre === f.id ? C.ink : "transparent", color: roleFiltre === f.id ? "#fff" : C.muted, fontSize: 12, fontWeight: 600 }}>
+                {f.label} <span style={{ opacity: 0.7 }}>({count})</span>
+              </button>
+            );
+          })}
+        </div>
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", maxWidth: 900 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
             <thead>
@@ -3129,7 +3251,9 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
               </tr>
             </thead>
             <tbody>
-              {comptes.map((c) => (
+              {comptesFiltres.length === 0 ? (
+                <tr><td colSpan={6} style={{ padding: "20px 16px", textAlign: "center", color: C.mutedSoft, fontSize: 12.5 }}>Aucun compte pour ce rôle.</td></tr>
+              ) : comptesFiltres.map((c) => (
                 <tr key={c.id} style={{ borderTop: `1px solid ${C.borderSoft}`, opacity: c.actif === false ? 0.55 : 1 }}>
                   <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.matricule}</td>
                   {editingId === c.id ? (
@@ -3200,7 +3324,9 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
             </tbody>
           </table>
         </div>
-      )}
+        </>
+        );
+      })()}
 
       {managingPermsId && (() => {
         const cible = comptes.find((c) => c.id === managingPermsId);
