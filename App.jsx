@@ -1386,6 +1386,73 @@ function formatDuree(secondes) {
   return `${m}min ${String(s).padStart(2, "0")}s`;
 }
 
+/* ---------------------------------- statut en direct de l'équipe ---------------------------------- */
+
+function LiveStatusPanel({ accessToken }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const perimetre = await rpc("mon_perimetre_personnes", accessToken, {});
+      const ids = (perimetre || []).map((r) => r.profil_id);
+      if (ids.length === 0) { setRows([]); return; }
+      const [profils, pauseTypes, pausesOuvertes] = await Promise.all([
+        supaRest(`profils?select=id,nom,role,matricule,statut&role=in.(agent,superviseur,coach)&id=in.(${ids.join(",")})&order=nom.asc`, { accessToken }),
+        supaRest("pause_types?select=*", { accessToken }),
+        supaRest(`pause_details?select=agent_id,pause_type_id&fin=is.null&agent_id=in.(${ids.join(",")})`, { accessToken }),
+      ]);
+      const list = profils.map((p) => {
+        const pauseOuverte = pausesOuvertes.find((d) => d.agent_id === p.id);
+        const pauseType = pauseOuverte ? pauseTypes.find((t) => t.id === pauseOuverte.pause_type_id) : null;
+        return { ...p, pauseLabel: pauseType?.nom || null, pauseCouleur: pauseType?.couleur || null };
+      });
+      list.sort((a, b) => {
+        const ordre = { en_prod: 0, en_pause: 1, deconnecte: 2 };
+        return (ordre[a.statut] ?? 3) - (ordre[b.statut] ?? 3) || a.nom.localeCompare(b.nom);
+      });
+      setRows(list);
+    } catch (e) { setError(e.message); }
+  }, [accessToken]);
+
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+
+  if (error) return null; // discret : ne casse pas le reste du tableau de bord
+  if (!rows) return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 16 }}><CenterLoader /></div>;
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <CircleDot size={14} color={C.green} />
+          <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Statut en direct</h2>
+        </div>
+        <span style={{ fontSize: 10.5, color: C.mutedSoft }}>Actualisé toutes les 15 secondes</span>
+      </div>
+      {rows.length === 0 ? (
+        <p style={{ fontSize: 12.5, color: C.muted }}>Aucune personne dans votre périmètre.</p>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8 }}>
+          {rows.map((p) => {
+            const st = AGENT_STATUTS.find((s) => s.id === p.statut);
+            const dotColor = p.statut === "en_prod" ? C.green : p.statut === "en_pause" ? (p.pauseCouleur || C.amber) : C.mutedSoft;
+            const label = p.statut === "en_pause" && p.pauseLabel ? p.pauseLabel : (st?.label || p.statut);
+            return (
+              <div key={p.id} className="flex items-center gap-2.5" style={{ background: C.canvas, borderRadius: 9, padding: "9px 12px" }}>
+                <span style={{ width: 8, height: 8, borderRadius: 999, background: dotColor, flexShrink: 0, boxShadow: p.statut === "en_prod" ? `0 0 0 3px ${C.greenSoft}` : "none" }} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.nom}</div>
+                  <div style={{ fontSize: 10.5, color: C.muted }}>{label}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Dashboard({ accessToken, refreshFlag }) {
   const [counts, setCounts] = useState(null);
   const [parAgent, setParAgent] = useState(null);
@@ -1502,6 +1569,8 @@ function Dashboard({ accessToken, refreshFlag }) {
           </div>
         </div>
       </div>
+
+      <LiveStatusPanel accessToken={accessToken} />
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
         <div className="flex items-center gap-2 mb-4">
