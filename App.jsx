@@ -645,6 +645,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   })();
   const [cat, setCat] = useState(null);
   const [sub, setSub] = useState(null);
+  const [rappelDate, setRappelDate] = useState("");
+  const [rappelHeure, setRappelHeure] = useState("");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [lastOutcome, setLastOutcome] = useState(null);
@@ -749,15 +751,19 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     const catObj = tree.find((t) => t.categorie === cat);
     const subObj = catObj.subs.find((s) => s.id === sub);
     const dureeSecondes = ficheStartRef.current ? Math.round((Date.now() - ficheStartRef.current) / 1000) : null;
+    const visibleApres = cat === "À rappeler" && rappelDate && rappelHeure
+      ? new Date(`${rappelDate}T${rappelHeure}`).toISOString()
+      : null;
     setSubmitting(true); setError(null);
     try {
       await rpc("qualifier_fiche", accessToken, {
         p_client_id: fiche.id, p_type_qualification_id: subObj.id, p_commentaire: note || null,
-        p_duree_secondes: dureeSecondes,
+        p_duree_secondes: dureeSecondes, p_visible_apres: visibleApres,
       });
       setLastOutcome({ cat: catObj, sub: subObj });
       setFiche(null);
       ficheStartRef.current = null;
+      setRappelDate(""); setRappelHeure("");
       bump();
       loadStats();
     } catch (e) { setError(e.message); } finally { setSubmitting(false); }
@@ -918,7 +924,11 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                 const Icon = c.icon;
                 const isActive = cat === c.categorie;
                 return (
-                  <button key={c.categorie} onClick={() => { setCat(c.categorie); setSub(null); }}
+                  <button key={c.categorie} onClick={() => {
+                    setCat(c.categorie);
+                    setSub(c.categorie === "À rappeler" ? c.subs[0]?.id ?? null : null);
+                    setRappelDate(""); setRappelHeure("");
+                  }}
                     style={{ background: isActive ? c.soft : C.surface, border: `1.5px solid ${isActive ? c.color : C.border}`, borderRadius: 10, padding: "14px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     <Icon size={18} color={c.color} />
                     <span style={{ fontSize: 12, fontWeight: 600, color: isActive ? c.color : C.text }}>{c.categorie}</span>
@@ -929,29 +939,54 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
             {cat && (
               <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
-                <div className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: C.mutedSoft }}><ArrowRight size={12} /> Motif précis</div>
-                <div className="flex flex-wrap gap-2">
-                  {tree.find((t) => t.categorie === cat).subs.map((s) => {
-                    const isActive = sub === s.id;
-                    const catColor = tree.find((t) => t.categorie === cat).color;
-                    return (
-                      <button key={s.id} onClick={() => setSub(s.id)}
-                        style={{ border: `1.5px solid ${isActive ? catColor : C.border}`, background: isActive ? catColor : C.surface, color: isActive ? "#fff" : C.text, borderRadius: 999, padding: "7px 14px", fontSize: 12.5, fontWeight: 500 }}>
-                        {s.motif}
-                        {!s.terminale && <span style={{ opacity: isActive ? 0.85 : 0.55, marginLeft: 6, fontSize: 11 }}>· {s.delai_heures < 24 ? `${s.delai_heures}h` : `${Math.round(s.delai_heures / 24)}j`}</span>}
-                      </button>
-                    );
-                  })}
-                </div>
+                {cat === "À rappeler" ? (
+                  <>
+                    <div className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: C.mutedSoft }}>
+                      <ArrowRight size={12} /> Jour et heure souhaités par le client
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input type="date" value={rappelDate} min={new Date().toISOString().slice(0, 10)}
+                        onChange={(e) => setRappelDate(e.target.value)}
+                        style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
+                      <input type="time" value={rappelHeure} onChange={(e) => setRappelHeure(e.target.value)}
+                        style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: C.mutedSoft }}><ArrowRight size={12} /> Motif précis</div>
+                    <div className="flex flex-wrap gap-2">
+                      {tree.find((t) => t.categorie === cat).subs.map((s) => {
+                        const isActive = sub === s.id;
+                        const catColor = tree.find((t) => t.categorie === cat).color;
+                        return (
+                          <button key={s.id} onClick={() => setSub(s.id)}
+                            style={{ border: `1.5px solid ${isActive ? catColor : C.border}`, background: isActive ? catColor : C.surface, color: isActive ? "#fff" : C.text, borderRadius: 999, padding: "7px 14px", fontSize: 12.5, fontWeight: 500 }}>
+                            {s.motif}
+                            {!s.terminale && <span style={{ opacity: isActive ? 0.85 : 0.55, marginLeft: 6, fontSize: 11 }}>· {s.delai_heures < 24 ? `${s.delai_heures}h` : `${Math.round(s.delai_heures / 24)}j`}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
-            {sub && (
+            {sub && (cat !== "À rappeler" || (rappelDate && rappelHeure)) && (
               <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px dashed ${C.border}` }}>
                 <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Commentaire (facultatif)…" rows={2}
                   style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, resize: "none", outline: "none" }} />
                 <div className="flex items-center justify-between mt-3">
                   {(() => {
+                    if (cat === "À rappeler") {
+                      const d = new Date(`${rappelDate}T${rappelHeure}`);
+                      return (
+                        <span style={{ fontSize: 11.5, color: C.mutedSoft }}>
+                          → Rappel programmé le {d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} à {rappelHeure}.
+                        </span>
+                      );
+                    }
                     const s = tree.find((t) => t.categorie === cat).subs.find((x) => x.id === sub);
                     return (
                       <span style={{ fontSize: 11.5, color: C.mutedSoft }}>
