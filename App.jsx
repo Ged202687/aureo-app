@@ -154,6 +154,19 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState(null);
 
+  // Si le navigateur restaure la page depuis son cache (bfcache) plutôt que de
+  // vraiment relancer l'application — ce qui peut arriver même sur un simple
+  // F5 selon le navigateur — l'état React (dont la session) survit tel quel.
+  // On force alors un retour à l'écran de connexion, pour ne jamais laisser
+  // une session "gelée" apparaître comme active.
+  useEffect(() => {
+    function handlePageShow(e) {
+      if (e.persisted) setSession(null);
+    }
+    window.addEventListener("pageshow", handlePageShow);
+    return () => window.removeEventListener("pageshow", handlePageShow);
+  }, []);
+
   async function handleLogin(login, password) {
     setAuthLoading(true); setAuthError(null);
     try {
