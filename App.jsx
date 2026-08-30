@@ -156,12 +156,14 @@ export default function App() {
 
   // Si le navigateur restaure la page depuis son cache (bfcache) plutôt que de
   // vraiment relancer l'application — ce qui peut arriver même sur un simple
-  // F5 selon le navigateur — l'état React (dont la session) survit tel quel.
-  // On force alors un retour à l'écran de connexion, pour ne jamais laisser
-  // une session "gelée" apparaître comme active.
+  // F5 selon le navigateur (Edge notamment) — l'état React (dont la session)
+  // survit tel quel. On force alors un VRAI rechargement complet de la page
+  // (pas juste une réinitialisation d'état React) : c'est la manière la plus
+  // fiable de garantir qu'aucune session "gelée" ne reste jamais affichée
+  // comme active, quel que soit le moteur du navigateur.
   useEffect(() => {
     function handlePageShow(e) {
-      if (e.persisted) setSession(null);
+      if (e.persisted) window.location.reload();
     }
     window.addEventListener("pageshow", handlePageShow);
     return () => window.removeEventListener("pageshow", handlePageShow);
