@@ -1483,7 +1483,7 @@ function LiveStatusPanel({ accessToken }) {
     } catch (e) { setError(e.message); }
   }, [accessToken]);
 
-  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
 
   if (error) return null; // discret : ne casse pas le reste du tableau de bord
   if (!rows) return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 16 }}><CenterLoader /></div>;
@@ -1495,7 +1495,7 @@ function LiveStatusPanel({ accessToken }) {
           <CircleDot size={14} color={C.green} />
           <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Statut en direct</h2>
         </div>
-        <span style={{ fontSize: 10.5, color: C.mutedSoft }}>Actualisé toutes les 15 secondes</span>
+        <span style={{ fontSize: 10.5, color: C.mutedSoft }}>Actualisé toutes les 30 secondes</span>
       </div>
       {rows.length === 0 ? (
         <p style={{ fontSize: 12.5, color: C.muted }}>Aucune personne dans votre périmètre.</p>
@@ -1528,33 +1528,34 @@ function Dashboard({ accessToken, refreshFlag }) {
   const [error, setError] = useState(null);
   const [periode, setPeriode] = useState("jour"); // jour | semaine | mois
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const statutRows = await supaRest("vue_compte_statuts_clients?select=*", { accessToken });
-        const c = { disponible: 0, en_cours: 0, planifie: 0, archive: 0, total: 0 };
-        statutRows.forEach((r) => { c[r.statut] = r.total; c.total += r.total; });
-        setCounts(c);
+  const loadDashboard = useCallback(async () => {
+    try {
+      const statutRows = await supaRest("vue_compte_statuts_clients?select=*", { accessToken });
+      const c = { disponible: 0, en_cours: 0, planifie: 0, archive: 0, total: 0 };
+      statutRows.forEach((r) => { c[r.statut] = r.total; c.total += r.total; });
+      setCounts(c);
 
-        const rappels = await supaRest("vue_rappels_par_agent?select=*", { accessToken });
-        const profils = await supaRest("profils?select=id,nom,statut", { accessToken });
-        const list = rappels.map((r) => ({
-          agentId: r.agent_id, nom: profils.find((p) => p.id === r.agent_id)?.nom || "Agent",
-          statut: profils.find((p) => p.id === r.agent_id)?.statut, total: r.total, enRetard: r.en_retard,
-        })).sort((a, b) => b.enRetard - a.enRetard || b.total - a.total);
-        setParAgent(list);
+      const rappels = await supaRest("vue_rappels_par_agent?select=*", { accessToken });
+      const profils = await supaRest("profils?select=id,nom,statut", { accessToken });
+      const list = rappels.map((r) => ({
+        agentId: r.agent_id, nom: profils.find((p) => p.id === r.agent_id)?.nom || "Agent",
+        statut: profils.find((p) => p.id === r.agent_id)?.statut, total: r.total, enRetard: r.en_retard,
+      })).sort((a, b) => b.enRetard - a.enRetard || b.total - a.total);
+      setParAgent(list);
 
-        // Performance sur la période choisie (jour/semaine/mois), agrégation SQL scopée
-        const debut = debutPeriode(periode);
-        const fin = finPeriode(periode, debut);
-        const [perfRow] = await rpc("perf_periode", accessToken, { p_debut: debut.toISOString(), p_fin: fin.toISOString() });
-        setPerf({
-          traitees: perfRow?.traitees || 0, contacts: perfRow?.contacts || 0, ventes: perfRow?.ventes || 0,
-          dureeMoyenne: perfRow?.duree_moyenne_secondes ?? null,
-        });
-      } catch (e) { setError(e.message); }
-    })();
-  }, [accessToken, refreshFlag, periode]);
+      // Performance sur la période choisie (jour/semaine/mois), agrégation SQL scopée
+      const debut = debutPeriode(periode);
+      const fin = finPeriode(periode, debut);
+      const [perfRow] = await rpc("perf_periode", accessToken, { p_debut: debut.toISOString(), p_fin: fin.toISOString() });
+      setPerf({
+        traitees: perfRow?.traitees || 0, contacts: perfRow?.contacts || 0, ventes: perfRow?.ventes || 0,
+        dureeMoyenne: perfRow?.duree_moyenne_secondes ?? null,
+      });
+    } catch (e) { setError(e.message); }
+  }, [accessToken, periode]);
+
+  useEffect(() => { loadDashboard(); }, [loadDashboard, refreshFlag]);
+  useEffect(() => { const t = setInterval(loadDashboard, 30000); return () => clearInterval(t); }, [loadDashboard]);
 
   if (error) return <ErrorBlock message={error} />;
   if (!counts) return <CenterLoader />;
@@ -1575,7 +1576,7 @@ function Dashboard({ accessToken, refreshFlag }) {
       <header className="mb-5 flex items-end justify-between">
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Tableau de bord</h1>
-          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Données en direct depuis Supabase.</p>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Données en direct depuis Supabase — actualisées toutes les 30 secondes.</p>
         </div>
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 4 }} className="flex gap-1">
           {[{ id: "jour", label: "Jour" }, { id: "semaine", label: "Semaine" }, { id: "mois", label: "Mois" }].map((p) => (
@@ -1750,6 +1751,7 @@ function PresencePanel({ accessToken }) {
   }, [accessToken, date, mois, vue]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
 
   function exportExcel() {
     setExporting(true);
@@ -1803,7 +1805,7 @@ function PresencePanel({ accessToken }) {
       <header className="mb-6 flex items-end justify-between">
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Présence</h1>
-          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, pauses par type et taux d'occupation par agent.</p>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, pauses par type et taux d'occupation par agent — actualisé toutes les 30 secondes.</p>
         </div>
         <div className="flex items-center gap-2">
           <div style={{ background: C.canvas, borderRadius: 8, padding: 3 }} className="flex gap-1">
@@ -2115,6 +2117,7 @@ function Queue({ accessToken, refreshFlag, bump }) {
   }, [accessToken]);
 
   useEffect(() => { load(); }, [load, refreshFlag]);
+  useEffect(() => { const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
   useEffect(() => { const t = setInterval(() => forceTick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
 
   if (error) return <ErrorBlock message={error} />;
