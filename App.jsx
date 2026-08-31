@@ -149,24 +149,64 @@ function hoursDecimal(totalSeconds) {
 
 /* ---------------------------------- app racine ---------------------------------- */
 
+const SESSION_STORAGE_KEY = "aureo_session";
+
+function saveSessionStorage(s) {
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+      accessToken: s.accessToken, refreshToken: s.refreshToken,
+      userId: s.user.id, email: s.user.email, connectedAt: s.connectedAt,
+    }));
+  } catch {}
+}
+function clearSessionStorage() {
+  try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch {}
+}
+function loadSessionStorage() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
 export default function App() {
-  const [session, setSession] = useState(null); // { accessToken, user, profil, connectedAt }
+  const [session, setSession] = useState(null); // { accessToken, refreshToken, user, profil, connectedAt }
+  const [restoring, setRestoring] = useState(true);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState(null);
 
-  // Si le navigateur restaure la page depuis son cache (bfcache) plutôt que de
-  // vraiment relancer l'application — ce qui peut arriver même sur un simple
-  // F5 selon le navigateur (Edge notamment) — l'état React (dont la session)
-  // survit tel quel. On force alors un VRAI rechargement complet de la page
-  // (pas juste une réinitialisation d'état React) : c'est la manière la plus
-  // fiable de garantir qu'aucune session "gelée" ne reste jamais affichée
-  // comme active, quel que soit le moteur du navigateur.
+  // Restauration de la session au chargement de la page (F5, fermeture puis
+  // réouverture de l'onglet...). Si le jeton stocké a expiré, on tente un
+  // rafraîchissement avant d'abandonner et de revenir à l'écran de connexion.
   useEffect(() => {
-    function handlePageShow(e) {
-      if (e.persisted) window.location.reload();
-    }
-    window.addEventListener("pageshow", handlePageShow);
-    return () => window.removeEventListener("pageshow", handlePageShow);
+    (async () => {
+      const saved = loadSessionStorage();
+      if (!saved || !saved.accessToken || !saved.userId) { setRestoring(false); return; }
+      try {
+        let accessToken = saved.accessToken;
+        let refreshToken = saved.refreshToken;
+        let profilRows = await supaRest(`profils?select=*&id=eq.${saved.userId}`, { accessToken }).catch(() => null);
+        if (!profilRows) {
+          if (!refreshToken) throw new Error("session expirée");
+          const refreshed = await supaAuth("token?grant_type=refresh_token", { refresh_token: refreshToken });
+          accessToken = refreshed.access_token;
+          refreshToken = refreshed.refresh_token;
+          profilRows = await supaRest(`profils?select=*&id=eq.${saved.userId}`, { accessToken });
+        }
+        const profil = profilRows[0] || null;
+        if (!profil || profil.actif === false) throw new Error("session invalide");
+        const restored = {
+          accessToken, refreshToken, user: { id: saved.userId, email: saved.email },
+          profil, connectedAt: saved.connectedAt || Date.now(),
+        };
+        setSession(restored);
+        saveSessionStorage(restored); // conserve le jeton rafraîchi si besoin
+      } catch {
+        clearSessionStorage();
+      } finally {
+        setRestoring(false);
+      }
+    })();
   }, []);
 
   async function handleLogin(login, password) {
@@ -182,7 +222,9 @@ export default function App() {
       }
       // connexion = statut "en pause" par défaut ; l'agent bascule lui-même en "en production"
       try { profil = await rpc("set_my_status", data.access_token, { p_statut: "en_pause" }); } catch {}
-      setSession({ accessToken: data.access_token, user: data.user, profil, connectedAt: Date.now() });
+      const newSession = { accessToken: data.access_token, refreshToken: data.refresh_token, user: data.user, profil, connectedAt: Date.now() };
+      setSession(newSession);
+      saveSessionStorage(newSession);
     } catch (e) {
       setAuthError(e.message);
     } finally {
@@ -195,7 +237,18 @@ export default function App() {
       try { await supaRest(`pause_details?agent_id=eq.${session.user.id}&fin=is.null`, { method: "PATCH", accessToken: session.accessToken, body: { fin: new Date().toISOString() } }); } catch {}
       try { await rpc("set_my_status", session.accessToken, { p_statut: "deconnecte" }); } catch {}
     }
+    clearSessionStorage();
     setSession(null);
+  }
+
+  if (restoring) {
+    return (
+      <div className="flex items-center justify-center" style={{ minHeight: "100vh", background: C.ink }}>
+        <div className="flex items-center gap-2" style={{ color: "#A6ADBA", fontSize: 13 }}>
+          <Loader2 size={16} className="animate-spin" /> Reconnexion en cours…
+        </div>
+      </div>
+    );
   }
 
   if (!session) {
