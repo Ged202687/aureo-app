@@ -49,9 +49,24 @@ async function supaRest(path, { method = "GET", accessToken, body } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch { throw new Error(res.ok ? "Réponse inattendue du serveur." : `Requête rejetée (${res.status}) — probablement une URL trop longue.`); }
+  }
   if (!res.ok) throw new Error(data?.message || data?.error || "Erreur Supabase");
   return data;
+}
+
+// Découpe une requête "id=in.(...)" en plusieurs lots, pour éviter de générer
+// une URL trop longue (rejetée par Cloudflare en amont de Supabase) quand la
+// liste d'identifiants est potentiellement grande (export sur une longue période).
+async function fetchInChunks(pathPrefix, ids, accessToken, chunkSize = 150) {
+  if (!ids || ids.length === 0) return [];
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
+  const results = await Promise.all(chunks.map((chunk) => supaRest(`${pathPrefix}${chunk.join(",")})`, { accessToken })));
+  return results.flat();
 }
 
 const rpc = (fn, accessToken, body) => supaRest(`rpc/${fn}`, { method: "POST", accessToken, body });
@@ -1673,9 +1688,9 @@ function LiveStatusPanel({ accessToken, callerRole }) {
       const ids = (perimetre || []).map((r) => r.profil_id);
       if (ids.length === 0) { setRows([]); return; }
       const [profils, pauseTypes, pausesOuvertes] = await Promise.all([
-        supaRest(`profils?select=id,nom,role,matricule,statut&role=in.(agent,superviseur,coach)&id=in.(${ids.join(",")})&order=nom.asc`, { accessToken }),
+        fetchInChunks(`profils?select=id,nom,role,matricule,statut&role=in.(agent,superviseur,coach)&id=in.(`, ids, accessToken),
         supaRest("pause_types?select=*&actif=eq.true&order=ordre.asc", { accessToken }),
-        supaRest(`pause_details?select=agent_id,pause_type_id&fin=is.null&agent_id=in.(${ids.join(",")})`, { accessToken }),
+        fetchInChunks(`pause_details?select=agent_id,pause_type_id&fin=is.null&agent_id=in.(`, ids, accessToken),
       ]);
       setPauseTypesList(pauseTypes);
       const list = profils.map((p) => {
@@ -1778,10 +1793,12 @@ function FichesBloqueesEquipe({ accessToken }) {
       const agentIds = (perimetre || []).map((r) => r.agent_id);
       if (agentIds.length === 0) { setRows([]); return; }
       const [clients, profils] = await Promise.all([
-        supaRest(`clients?select=id,nom,numero_fiche,agent_id,updated_at&statut=eq.en_cours&agent_id=in.(${agentIds.join(",")})&order=updated_at.asc`, { accessToken }),
-        supaRest(`profils?select=id,nom&id=in.(${agentIds.join(",")})`, { accessToken }),
+        fetchInChunks(`clients?select=id,nom,numero_fiche,agent_id,updated_at&statut=eq.en_cours&agent_id=in.(`, agentIds, accessToken),
+        fetchInChunks(`profils?select=id,nom&id=in.(`, agentIds, accessToken),
       ]);
-      setRows(clients.map((c) => ({ ...c, agentNom: profils.find((p) => p.id === c.agent_id)?.nom || "Agent" })));
+      const merged = clients.map((c) => ({ ...c, agentNom: profils.find((p) => p.id === c.agent_id)?.nom || "Agent" }));
+      merged.sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at));
+      setRows(merged);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
 
@@ -2010,7 +2027,7 @@ function PresencePanel({ accessToken }) {
       const idsVisibles = (perimetre || []).map((r) => r.profil_id);
       if (idsVisibles.length === 0) { setRows([]); return; }
       const [profils, temps, pauseTypes, pauseDetails, historique] = await Promise.all([
-        supaRest(`profils?select=id,nom,role,matricule&role=in.(agent,superviseur,coach)&id=in.(${idsVisibles.join(",")})&order=nom.asc`, { accessToken }),
+        fetchInChunks(`profils?select=id,nom,role,matricule&role=in.(agent,superviseur,coach)&id=in.(`, idsVisibles, accessToken),
         vue === "jour"
           ? supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${jourGteFilter}`, { accessToken })
           : supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=gte.${jourGteFilter}&jour=lt.${jourLtFilter}`, { accessToken }),
@@ -2273,8 +2290,8 @@ function ExportPanel({ accessToken }) {
       const agentIds = [...new Set(qualifs.map((q) => q.agent_id).filter(Boolean))];
 
       const [clients, profils] = await Promise.all([
-        supaRest(`clients?select=id,numero_fiche,numero_box,nom,telephone,lot_id,lots(nom,campagne_id,campagnes(nom))&id=in.(${clientIds.join(",")})`, { accessToken }),
-        agentIds.length > 0 ? supaRest(`profils?select=id,nom&id=in.(${agentIds.join(",")})`, { accessToken }) : Promise.resolve([]),
+        fetchInChunks(`clients?select=id,numero_fiche,numero_box,nom,telephone,lot_id,lots(nom,campagne_id,campagnes(nom))&id=in.(`, clientIds, accessToken),
+        agentIds.length > 0 ? fetchInChunks(`profils?select=id,nom&id=in.(`, agentIds, accessToken) : Promise.resolve([]),
       ]);
 
       const merged = qualifs.map((q) => {
