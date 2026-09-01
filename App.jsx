@@ -1188,8 +1188,12 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
       const jour = (now.getDay() + 6) % 7; // lundi = 0
       const debut = new Date(now.getFullYear(), now.getMonth(), now.getDate() - jour);
       const fin = new Date(debut.getTime() + 7 * 24 * 3600 * 1000);
+      // !inner + filtre sur la catégorie embarquée : ne remonte que les
+      // fiches dont le motif appartient à "À rappeler" — pas n'importe
+      // quelle qualification non-terminale (ex. "Rechargement validé", qui
+      // revient aussi dans la file mais n'est pas un rappel demandé).
       const rows = await supaRest(
-        `clients?select=id,nom,telephone,numero_fiche,visible_apres&statut=eq.planifie&agent_id=eq.${agentId}&visible_apres=gte.${debut.toISOString()}&visible_apres=lt.${fin.toISOString()}&order=visible_apres.asc`,
+        `clients?select=id,nom,telephone,numero_fiche,visible_apres,types_qualification!inner(categorie)&statut=eq.planifie&agent_id=eq.${agentId}&types_qualification.categorie=eq.${encodeURIComponent("À rappeler")}&visible_apres=gte.${debut.toISOString()}&visible_apres=lt.${fin.toISOString()}&order=visible_apres.asc`,
         { accessToken }
       );
       setRappels(rows);
