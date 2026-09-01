@@ -874,6 +874,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       bump();
       loadStats();
       loadOrphelines();
+      setTimeout(loadOrphelines, 1500);
       setSidebarBump((n) => n + 1);
     } catch (e) { setError(e.message); } finally { setSubmitting(false); }
   }
@@ -2276,6 +2277,9 @@ function ExportPanel({ accessToken }) {
   const [lots, setLots] = useState(null);
   const [campagneId, setCampagneId] = useState("");
   const [lotId, setLotId] = useState("");
+  const [typesQualif, setTypesQualif] = useState(null);
+  const [categorieFiltre, setCategorieFiltre] = useState("");
+  const [motifFiltre, setMotifFiltre] = useState("");
   const [rows, setRows] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2284,16 +2288,19 @@ function ExportPanel({ accessToken }) {
   useEffect(() => {
     (async () => {
       try {
-        const [c, l] = await Promise.all([
+        const [c, l, tq] = await Promise.all([
           supaRest("campagnes?select=*&order=created_at.desc", { accessToken }),
           supaRest("lots?select=id,nom,campagne_id,cible_type,agent_id,groupe_id&order=created_at.desc", { accessToken }),
+          supaRest("types_qualification?select=categorie,motif&order=categorie.asc,motif.asc", { accessToken }),
         ]);
-        setCampagnes(c); setLots(l);
+        setCampagnes(c); setLots(l); setTypesQualif(tq);
       } catch (e) { setError(e.message); }
     })();
   }, [accessToken]);
 
   const lotsDisponibles = lots ? (campagneId ? lots.filter((l) => l.campagne_id === campagneId) : lots) : [];
+  const categoriesDisponibles = typesQualif ? [...new Set(typesQualif.map((t) => t.categorie))] : [];
+  const motifsDisponibles = typesQualif ? typesQualif.filter((t) => !categorieFiltre || t.categorie === categorieFiltre) : [];
 
   async function loadPreview() {
     setLoading(true); setError(null); setRows(null);
@@ -2327,15 +2334,17 @@ function ExportPanel({ accessToken }) {
           agentNom: profils.find((p) => p.id === q.agent_id)?.nom || "—",
         };
       }).filter((r) => {
-        if (!lotIdsFiltre) return true;
-        return r.client && lotIdsFiltre.includes(r.client.lot_id);
+        if (lotIdsFiltre && !(r.client && lotIdsFiltre.includes(r.client.lot_id))) return false;
+        if (categorieFiltre && r.types_qualification?.categorie !== categorieFiltre) return false;
+        if (motifFiltre && r.types_qualification?.motif !== motifFiltre) return false;
+        return true;
       });
 
       setRows(merged);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
-  useEffect(() => { loadPreview(); }, [dateStart, dateEnd, campagneId, lotId]); // eslint-disable-line
+  useEffect(() => { loadPreview(); }, [dateStart, dateEnd, campagneId, lotId, categorieFiltre, motifFiltre]); // eslint-disable-line
 
   function exportExcel() {
     setExporting(true);
@@ -2398,6 +2407,24 @@ function ExportPanel({ accessToken }) {
               style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, background: C.surface }}>
               <option value="">{campagneId ? "Tous les lots de cette campagne" : "Tous les lots"}</option>
               {lotsDisponibles.map((l) => <option key={l.id} value={l.id}>{l.nom}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 14 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 5, textTransform: "uppercase" }}>Catégorie</div>
+            <select value={categorieFiltre} onChange={(e) => { setCategorieFiltre(e.target.value); setMotifFiltre(""); }}
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, background: C.surface }}>
+              <option value="">Toutes les catégories</option>
+              {categoriesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 5, textTransform: "uppercase" }}>Qualification</div>
+            <select value={motifFiltre} onChange={(e) => setMotifFiltre(e.target.value)}
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, background: C.surface }}>
+              <option value="">{categorieFiltre ? "Tous les motifs de cette catégorie" : "Tous les motifs"}</option>
+              {motifsDisponibles.map((t) => <option key={t.motif} value={t.motif}>{t.motif}</option>)}
             </select>
           </div>
         </div>
