@@ -713,6 +713,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   })();
   const [cat, setCat] = useState(null);
   const [sub, setSub] = useState(null);
+  const [orphelines, setOrphelines] = useState([]);
+  const [showOrphelines, setShowOrphelines] = useState(false);
   const [rappelDate, setRappelDate] = useState("");
   const [rappelHeure, setRappelHeure] = useState("");
   const [note, setNote] = useState("");
@@ -777,6 +779,22 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
   useEffect(() => { loadStats(); }, [loadStats]);
 
+  // Fiches "en cours" sous ce compte mais jamais qualifiées (bug, mauvaise
+  // manip, fermeture d'onglet en plein appel...). Comme l'app ne garde
+  // jamais qu'une seule fiche ouverte à la fois, toute fiche "en_cours" hors
+  // de celle actuellement affichée est forcément un reliquat oublié.
+  const loadOrphelines = useCallback(async () => {
+    try {
+      const rows = await supaRest(
+        `clients?select=id,nom,telephone,numero_fiche,numero_box,updated_at&statut=eq.en_cours&agent_id=eq.${agentId}&order=updated_at.asc`,
+        { accessToken }
+      );
+      setOrphelines(rows);
+    } catch {}
+  }, [accessToken, agentId]);
+
+  useEffect(() => { loadOrphelines(); const t = setInterval(loadOrphelines, 30000); return () => clearInterval(t); }, [loadOrphelines]);
+
   const [showCreateClient, setShowCreateClient] = useState(false);
 
   async function openFicheDirect(f) {
@@ -793,6 +811,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
         setLastQualif(hist[0] || null);
       } catch {}
     }
+    loadOrphelines();
   }
 
   async function pullNext() {
@@ -834,6 +853,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       setRappelDate(""); setRappelHeure("");
       bump();
       loadStats();
+      loadOrphelines();
     } catch (e) { setError(e.message); } finally { setSubmitting(false); }
   }
 
@@ -942,6 +962,44 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
           onCreated={(client) => { setShowCreateClient(false); openFicheDirect(client); }}
         />
       )}
+
+      {(() => {
+        const listeOrphelines = orphelines.filter((o) => o.id !== fiche?.id);
+        if (listeOrphelines.length === 0) return null;
+        return (
+          <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, marginBottom: 16, overflow: "hidden" }}>
+            <button onClick={() => setShowOrphelines((v) => !v)}
+              className="flex items-center justify-between" style={{ width: "100%", padding: "12px 16px", background: "none", border: "none", cursor: "pointer" }}>
+              <span className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>
+                <AlertTriangle size={14} color={C.amber} />
+                {listeOrphelines.length} fiche{listeOrphelines.length !== 1 ? "s" : ""} en cours non qualifiée{listeOrphelines.length !== 1 ? "s" : ""}
+              </span>
+              <span style={{ fontSize: 11.5, color: C.muted }}>{showOrphelines ? "Masquer" : "Afficher"}</span>
+            </button>
+            {showOrphelines && (
+              <div style={{ borderTop: `1px solid ${C.amber}`, padding: "8px 12px" }}>
+                <p style={{ fontSize: 11, color: C.muted, margin: "4px 4px 10px" }}>
+                  Ces fiches ont été récupérées mais jamais qualifiées (bug, mauvaise manipulation, fermeture accidentelle...). Reprends-les pour les traiter.
+                </p>
+                {listeOrphelines.map((o) => (
+                  <div key={o.id} className="flex items-center justify-between" style={{ padding: "8px 8px", borderTop: `1px solid ${C.border}` }}>
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 500 }}>{o.nom}</div>
+                      <div className="mono" style={{ fontSize: 10.5, color: C.mutedSoft }}>
+                        #{o.numero_fiche} · récupérée {formatRelatif(o.updated_at)}
+                      </div>
+                    </div>
+                    <button onClick={() => openFicheDirect(o)}
+                      style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 600 }}>
+                      Reprendre
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {!fiche ? (
         <EmptyOrOutcome outcome={lastOutcome} onPull={pullNext} pulling={pulling} onCreateClient={() => setShowCreateClient(true)} />
@@ -1448,6 +1506,15 @@ function finPeriode(periode, debut) {
   if (periode === "semaine") return new Date(debut.getTime() + 7 * 24 * 3600 * 1000);
   return new Date(debut.getFullYear(), debut.getMonth() + 1, 1); // mois
 }
+function formatRelatif(dateStr) {
+  if (!dateStr) return "";
+  const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (s < 60) return "à l'instant";
+  if (s < 3600) return `il y a ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `il y a ${Math.floor(s / 3600)} h`;
+  return `il y a ${Math.floor(s / 86400)} j`;
+}
+
 function formatDuree(secondes) {
   if (secondes === null || secondes === undefined) return "—";
   const m = Math.floor(secondes / 60), s = Math.round(secondes % 60);
