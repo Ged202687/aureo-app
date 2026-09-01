@@ -655,7 +655,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
           ) : (
             <>
               {adminTab === "poste" && visibleTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
-              {adminTab === "dashboard" && visibleTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} />}
+              {adminTab === "dashboard" && visibleTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "queue" && visibleTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && visibleTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} />}
               {adminTab === "presence" && visibleTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -1161,6 +1161,7 @@ function AgentSidebar({ accessToken, agentId }) {
   const [rappels, setRappels] = useState(null);
   const [error, setError] = useState(null);
   const [showTraitees, setShowTraitees] = useState(false);
+  const [showRappels, setShowRappels] = useState(false);
   const [traitees, setTraitees] = useState(null);
 
   const loadRappels = useCallback(async () => {
@@ -1205,28 +1206,34 @@ function AgentSidebar({ accessToken, agentId }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
-        <div className="flex items-center gap-2 mb-3">
-          <BellRing size={13} color={C.amber} />
-          <h3 className="disp" style={{ fontSize: 13, fontWeight: 700 }}>Rappels de la semaine</h3>
-        </div>
-        {error ? (
-          <p style={{ fontSize: 11.5, color: C.red }}>{error}</p>
-        ) : rappels === null ? (
-          <CenterLoader />
-        ) : rappels.length === 0 ? (
-          <p style={{ fontSize: 12, color: C.mutedSoft }}>Aucun rappel programmé cette semaine.</p>
-        ) : (
-          <div className="flex flex-col gap-2.5">
-            {rappels.map((r) => (
-              <div key={r.id} style={{ borderLeft: `2px solid ${C.amber}`, paddingLeft: 9 }}>
-                <div style={{ fontSize: 10, color: C.amber, fontWeight: 600, textTransform: "capitalize" }}>
-                  {jourLabel(r.visible_apres)} · {new Date(r.visible_apres).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
-                </div>
-                <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.nom}</div>
-                <div className="mono" style={{ fontSize: 10.5, color: C.mutedSoft }}>#{r.numero_fiche}</div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+        <button onClick={() => setShowRappels((v) => !v)} className="flex items-center justify-between" style={{ width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer" }}>
+          <span className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
+            <BellRing size={13} color={C.amber} /> Rappels de la semaine{rappels && rappels.length > 0 ? ` (${rappels.length})` : ""}
+          </span>
+          {showRappels ? <ChevronUp size={14} color={C.mutedSoft} /> : <ChevronDown size={14} color={C.mutedSoft} />}
+        </button>
+        {showRappels && (
+          <div style={{ borderTop: `1px solid ${C.borderSoft}`, padding: 16, maxHeight: 340, overflowY: "auto" }}>
+            {error ? (
+              <p style={{ fontSize: 11.5, color: C.red }}>{error}</p>
+            ) : rappels === null ? (
+              <CenterLoader />
+            ) : rappels.length === 0 ? (
+              <p style={{ fontSize: 12, color: C.mutedSoft }}>Aucun rappel programmé cette semaine.</p>
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                {rappels.map((r) => (
+                  <div key={r.id} style={{ borderLeft: `2px solid ${C.amber}`, paddingLeft: 9 }}>
+                    <div style={{ fontSize: 10, color: C.amber, fontWeight: 600, textTransform: "capitalize" }}>
+                      {jourLabel(r.visible_apres)} · {new Date(r.visible_apres).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                    <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.nom}</div>
+                    <div className="mono" style={{ fontSize: 10.5, color: C.mutedSoft }}>#{r.numero_fiche}</div>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>
@@ -1651,9 +1658,14 @@ function formatDuree(secondes) {
 
 /* ---------------------------------- statut en direct de l'équipe ---------------------------------- */
 
-function LiveStatusPanel({ accessToken }) {
+function LiveStatusPanel({ accessToken, callerRole }) {
   const [rows, setRows] = useState(null);
+  const [pauseTypesList, setPauseTypesList] = useState([]);
   const [error, setError] = useState(null);
+  const [openMenuId, setOpenMenuId] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+
+  const peutControler = ["admin", "super_admin", "superviseur"].includes(callerRole);
 
   const load = useCallback(async () => {
     try {
@@ -1662,9 +1674,10 @@ function LiveStatusPanel({ accessToken }) {
       if (ids.length === 0) { setRows([]); return; }
       const [profils, pauseTypes, pausesOuvertes] = await Promise.all([
         supaRest(`profils?select=id,nom,role,matricule,statut&role=in.(agent,superviseur,coach)&id=in.(${ids.join(",")})&order=nom.asc`, { accessToken }),
-        supaRest("pause_types?select=*", { accessToken }),
+        supaRest("pause_types?select=*&actif=eq.true&order=ordre.asc", { accessToken }),
         supaRest(`pause_details?select=agent_id,pause_type_id&fin=is.null&agent_id=in.(${ids.join(",")})`, { accessToken }),
       ]);
+      setPauseTypesList(pauseTypes);
       const list = profils.map((p) => {
         const pauseOuverte = pausesOuvertes.find((d) => d.agent_id === p.id);
         const pauseType = pauseOuverte ? pauseTypes.find((t) => t.id === pauseOuverte.pause_type_id) : null;
@@ -1679,6 +1692,14 @@ function LiveStatusPanel({ accessToken }) {
   }, [accessToken]);
 
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+
+  async function forcerStatut(agentId, statut, pauseTypeId = null) {
+    setBusyId(agentId); setOpenMenuId(null);
+    try {
+      await rpc("forcer_statut_agent", accessToken, { p_agent_id: agentId, p_statut: statut, p_pause_type_id: pauseTypeId });
+      load();
+    } catch (e) { setError(e.message); } finally { setBusyId(null); }
+  }
 
   if (error) return null; // discret : ne casse pas le reste du tableau de bord
   if (!rows) return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 16 }}><CenterLoader /></div>;
@@ -1700,13 +1721,41 @@ function LiveStatusPanel({ accessToken }) {
             const st = AGENT_STATUTS.find((s) => s.id === p.statut);
             const dotColor = p.statut === "en_prod" ? C.green : p.statut === "en_pause" ? (p.pauseCouleur || C.amber) : C.mutedSoft;
             const label = p.statut === "en_pause" && p.pauseLabel ? p.pauseLabel : (st?.label || p.statut);
+            const menuOuvert = openMenuId === p.id;
             return (
-              <div key={p.id} className="flex items-center gap-2.5" style={{ background: C.canvas, borderRadius: 9, padding: "9px 12px" }}>
-                <span style={{ width: 8, height: 8, borderRadius: 999, background: dotColor, flexShrink: 0, boxShadow: p.statut === "en_prod" ? `0 0 0 3px ${C.greenSoft}` : "none" }} />
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.nom}</div>
-                  <div style={{ fontSize: 10.5, color: C.muted }}>{label}</div>
+              <div key={p.id} style={{ position: "relative" }}>
+                <div className="flex items-center gap-2.5" onClick={() => peutControler && setOpenMenuId(menuOuvert ? null : p.id)}
+                  style={{ background: C.canvas, borderRadius: 9, padding: "9px 12px", cursor: peutControler ? "pointer" : "default" }}>
+                  {busyId === p.id ? (
+                    <Loader2 size={11} className="animate-spin" style={{ flexShrink: 0 }} />
+                  ) : (
+                    <span style={{ width: 8, height: 8, borderRadius: 999, background: dotColor, flexShrink: 0, boxShadow: p.statut === "en_prod" ? `0 0 0 3px ${C.greenSoft}` : "none" }} />
+                  )}
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.nom}</div>
+                    <div style={{ fontSize: 10.5, color: C.muted }}>{label}</div>
+                  </div>
+                  {peutControler && <ChevronDown size={12} color={C.mutedSoft} style={{ flexShrink: 0 }} />}
                 </div>
+                {menuOuvert && (
+                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", zIndex: 20, overflow: "hidden" }}>
+                    <button onClick={() => forcerStatut(p.id, "en_prod")}
+                      className="flex items-center gap-2" style={{ width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 12, textAlign: "left" }}>
+                      <PlayCircle size={12} color={C.green} /> Production
+                    </button>
+                    <div style={{ borderTop: `1px solid ${C.borderSoft}`, padding: "6px 12px 2px", fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase" }}>Pause</div>
+                    {pauseTypesList.map((pt) => (
+                      <button key={pt.id} onClick={() => forcerStatut(p.id, "en_pause", pt.id)}
+                        className="flex items-center gap-2" style={{ width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, textAlign: "left" }}>
+                        <span style={{ width: 7, height: 7, borderRadius: 999, background: pt.couleur || C.amber }} /> {pt.nom}
+                      </button>
+                    ))}
+                    <button onClick={() => forcerStatut(p.id, "deconnecte")}
+                      className="flex items-center gap-2" style={{ width: "100%", padding: "8px 12px", background: "none", border: "none", borderTop: `1px solid ${C.borderSoft}`, fontSize: 12, textAlign: "left", color: C.red }}>
+                      <PowerOff size={12} /> Déconnecter
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1775,7 +1824,7 @@ function FichesBloqueesEquipe({ accessToken }) {
   );
 }
 
-function Dashboard({ accessToken, refreshFlag }) {
+function Dashboard({ accessToken, refreshFlag, callerRole }) {
   const [counts, setCounts] = useState(null);
   const [parAgent, setParAgent] = useState(null);
   const [perf, setPerf] = useState(null); // { traitees, contacts, ventes, dureeMoyenne }
@@ -1893,7 +1942,7 @@ function Dashboard({ accessToken, refreshFlag }) {
         </div>
       </div>
 
-      <LiveStatusPanel accessToken={accessToken} />
+      <LiveStatusPanel accessToken={accessToken} callerRole={callerRole} />
       <FichesBloqueesEquipe accessToken={accessToken} />
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
