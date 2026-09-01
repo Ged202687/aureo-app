@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, Plus, Trash2, UserCircle2, FastForward, Inbox, ArrowRight,
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
-  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw,
+  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -717,6 +717,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const [showOrphelines, setShowOrphelines] = useState(false);
   const [rappelDate, setRappelDate] = useState("");
   const [rappelHeure, setRappelHeure] = useState("");
+  const [dateValidation, setDateValidation] = useState("");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [lastOutcome, setLastOutcome] = useState(null);
@@ -841,16 +842,19 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     const visibleApres = cat === "À rappeler" && rappelDate && rappelHeure
       ? new Date(`${rappelDate}T${rappelHeure}`).toISOString()
       : null;
+    const commentaireFinal = (subObj.motif === "Rechargement validé" && dateValidation)
+      ? `Date de validation : ${new Date(dateValidation + "T00:00:00").toLocaleDateString("fr-FR")}${note ? " — " + note : ""}`
+      : (note || null);
     setSubmitting(true); setError(null);
     try {
       await rpc("qualifier_fiche", accessToken, {
-        p_client_id: fiche.id, p_type_qualification_id: subObj.id, p_commentaire: note || null,
+        p_client_id: fiche.id, p_type_qualification_id: subObj.id, p_commentaire: commentaireFinal,
         p_duree_secondes: dureeSecondes, p_visible_apres: visibleApres,
       });
       setLastOutcome({ cat: catObj, sub: subObj });
       setFiche(null);
       ficheStartRef.current = null;
-      setRappelDate(""); setRappelHeure("");
+      setRappelDate(""); setRappelHeure(""); setDateValidation("");
       bump();
       loadStats();
       loadOrphelines();
@@ -952,7 +956,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       {view === "recherche" ? (
         <AgentSearch accessToken={accessToken} agentId={agentId} onAfficher={openFicheDirect} />
       ) : (
-      <>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 20, alignItems: "start" }}>
+      <div>
       {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
 
       {showCreateClient && (
@@ -1053,7 +1058,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                   <button key={c.categorie} onClick={() => {
                     setCat(c.categorie);
                     setSub(c.categorie === "À rappeler" ? c.subs[0]?.id ?? null : null);
-                    setRappelDate(""); setRappelHeure("");
+                    setRappelDate(""); setRappelHeure(""); setDateValidation("");
                   }}
                     style={{ background: isActive ? c.soft : C.surface, border: `1.5px solid ${isActive ? c.color : C.border}`, borderRadius: 10, padding: "14px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     <Icon size={18} color={c.color} />
@@ -1094,6 +1099,20 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                         );
                       })}
                     </div>
+                    {(() => {
+                      const motifActif = tree.find((t) => t.categorie === cat).subs.find((s) => s.id === sub);
+                      if (motifActif?.motif !== "Rechargement validé") return null;
+                      return (
+                        <div style={{ marginTop: 12 }}>
+                          <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11, color: C.mutedSoft }}>
+                            <ArrowRight size={11} /> Date de validation du rechargement
+                          </div>
+                          <input type="date" value={dateValidation} onChange={(e) => setDateValidation(e.target.value)}
+                            style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 11px", fontSize: 13 }} />
+                          <span style={{ fontSize: 10.5, color: C.mutedSoft, marginLeft: 8 }}>Les dates passées sont acceptées.</span>
+                        </div>
+                      );
+                    })()}
                   </>
                 )}
               </div>
@@ -1130,8 +1149,117 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
           </div>
         </div>
       )}
-      </>
+      </div>
+      <AgentSidebar accessToken={accessToken} agentId={agentId} />
+      </div>
       )}
+    </div>
+  );
+}
+
+function AgentSidebar({ accessToken, agentId }) {
+  const [rappels, setRappels] = useState(null);
+  const [error, setError] = useState(null);
+  const [showTraitees, setShowTraitees] = useState(false);
+  const [traitees, setTraitees] = useState(null);
+
+  const loadRappels = useCallback(async () => {
+    try {
+      const now = new Date();
+      const jour = (now.getDay() + 6) % 7; // lundi = 0
+      const debut = new Date(now.getFullYear(), now.getMonth(), now.getDate() - jour);
+      const fin = new Date(debut.getTime() + 7 * 24 * 3600 * 1000);
+      const rows = await supaRest(
+        `clients?select=id,nom,telephone,numero_fiche,visible_apres&statut=eq.planifie&agent_id=eq.${agentId}&visible_apres=gte.${debut.toISOString()}&visible_apres=lt.${fin.toISOString()}&order=visible_apres.asc`,
+        { accessToken }
+      );
+      setRappels(rows);
+    } catch (e) { setError(e.message); }
+  }, [accessToken, agentId]);
+
+  useEffect(() => { loadRappels(); const t = setInterval(loadRappels, 30000); return () => clearInterval(t); }, [loadRappels]);
+
+  async function loadTraitees() {
+    if (traitees === null) {
+      try {
+        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+        const rows = await supaRest(
+          `qualifications?select=created_at,commentaire,types_qualification(categorie,motif),clients(nom,numero_fiche)&agent_id=eq.${agentId}&created_at=gte.${startOfDay.toISOString()}&order=created_at.desc`,
+          { accessToken }
+        );
+        setTraitees(rows);
+      } catch { setTraitees([]); }
+    }
+    setShowTraitees((v) => !v);
+  }
+
+  function jourLabel(dateStr) {
+    const d = new Date(dateStr);
+    const auj = new Date(); auj.setHours(0, 0, 0, 0);
+    const jd = new Date(d); jd.setHours(0, 0, 0, 0);
+    const diffJours = Math.round((jd - auj) / (24 * 3600 * 1000));
+    if (diffJours === 0) return "Aujourd'hui";
+    if (diffJours === 1) return "Demain";
+    return d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric" });
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+        <div className="flex items-center gap-2 mb-3">
+          <BellRing size={13} color={C.amber} />
+          <h3 className="disp" style={{ fontSize: 13, fontWeight: 700 }}>Rappels de la semaine</h3>
+        </div>
+        {error ? (
+          <p style={{ fontSize: 11.5, color: C.red }}>{error}</p>
+        ) : rappels === null ? (
+          <CenterLoader />
+        ) : rappels.length === 0 ? (
+          <p style={{ fontSize: 12, color: C.mutedSoft }}>Aucun rappel programmé cette semaine.</p>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            {rappels.map((r) => (
+              <div key={r.id} style={{ borderLeft: `2px solid ${C.amber}`, paddingLeft: 9 }}>
+                <div style={{ fontSize: 10, color: C.amber, fontWeight: 600, textTransform: "capitalize" }}>
+                  {jourLabel(r.visible_apres)} · {new Date(r.visible_apres).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                </div>
+                <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.nom}</div>
+                <div className="mono" style={{ fontSize: 10.5, color: C.mutedSoft }}>#{r.numero_fiche}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+        <button onClick={loadTraitees} className="flex items-center justify-between" style={{ width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer" }}>
+          <span className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
+            <History size={13} color={C.muted} /> Fiches traitées aujourd'hui
+          </span>
+          {showTraitees ? <ChevronUp size={14} color={C.mutedSoft} /> : <ChevronDown size={14} color={C.mutedSoft} />}
+        </button>
+        {showTraitees && (
+          <div style={{ borderTop: `1px solid ${C.borderSoft}`, maxHeight: 340, overflowY: "auto" }}>
+            {traitees === null ? (
+              <div style={{ padding: 16 }}><CenterLoader /></div>
+            ) : traitees.length === 0 ? (
+              <p style={{ fontSize: 12, color: C.mutedSoft, padding: 16 }}>Aucune fiche traitée pour l'instant aujourd'hui.</p>
+            ) : (
+              traitees.map((t, i) => (
+                <div key={i} style={{ padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.borderSoft}` : "none" }}>
+                  <div className="flex items-center justify-between">
+                    <span style={{ fontSize: 12.5, fontWeight: 500 }}>{t.clients?.nom || "Client"}</span>
+                    <span className="mono" style={{ fontSize: 10, color: C.mutedSoft }}>{new Date(t.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>
+                    {t.types_qualification?.categorie} — {t.types_qualification?.motif}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1588,6 +1716,65 @@ function LiveStatusPanel({ accessToken }) {
   );
 }
 
+/* ---------------------------------- fiches bloquées de l'équipe (vue d'ensemble) ---------------------------------- */
+
+function FichesBloqueesEquipe({ accessToken }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [liberationEnCours, setLiberationEnCours] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const perimetre = await rpc("mon_perimetre_agents", accessToken, {});
+      const agentIds = (perimetre || []).map((r) => r.agent_id);
+      if (agentIds.length === 0) { setRows([]); return; }
+      const [clients, profils] = await Promise.all([
+        supaRest(`clients?select=id,nom,numero_fiche,agent_id,updated_at&statut=eq.en_cours&agent_id=in.(${agentIds.join(",")})&order=updated_at.asc`, { accessToken }),
+        supaRest(`profils?select=id,nom&id=in.(${agentIds.join(",")})`, { accessToken }),
+      ]);
+      setRows(clients.map((c) => ({ ...c, agentNom: profils.find((p) => p.id === c.agent_id)?.nom || "Agent" })));
+    } catch (e) { setError(e.message); }
+  }, [accessToken]);
+
+  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+
+  async function liberer(clientId) {
+    setLiberationEnCours(clientId); setError(null);
+    try {
+      await rpc("liberer_fiche_bloquee", accessToken, { p_client_id: clientId });
+      load();
+    } catch (e) { setError(e.message); } finally { setLiberationEnCours(null); }
+  }
+
+  if (error) return <div className="mb-4"><ErrorBlock message={error} /></div>;
+  if (!rows || rows.length === 0) return null; // rien à signaler : on ne surcharge pas l'écran
+
+  return (
+    <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
+      <div className="flex items-center gap-2 mb-4">
+        <AlertTriangle size={14} color={C.amber} />
+        <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Fiches bloquées de l'équipe</h2>
+        <span style={{ fontSize: 11, color: C.muted }}>— jamais qualifiées, sans doute oubliées</span>
+      </div>
+      <div className="flex flex-col gap-2">
+        {rows.map((r) => (
+          <div key={r.id} className="flex items-center justify-between" style={{ background: C.surface, borderRadius: 9, padding: "9px 14px" }}>
+            <div>
+              <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.nom}</span>
+              <span className="mono" style={{ fontSize: 11, color: C.mutedSoft, marginLeft: 8 }}>#{r.numero_fiche}</span>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{r.agentNom} · récupérée {formatRelatif(r.updated_at)}</div>
+            </div>
+            <button onClick={() => liberer(r.id)} disabled={liberationEnCours === r.id}
+              className="flex items-center gap-1.5" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 600, color: C.ink }}>
+              {liberationEnCours === r.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />} Libérer
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ accessToken, refreshFlag }) {
   const [counts, setCounts] = useState(null);
   const [parAgent, setParAgent] = useState(null);
@@ -1707,6 +1894,7 @@ function Dashboard({ accessToken, refreshFlag }) {
       </div>
 
       <LiveStatusPanel accessToken={accessToken} />
+      <FichesBloqueesEquipe accessToken={accessToken} />
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
         <div className="flex items-center gap-2 mb-4">
