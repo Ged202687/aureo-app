@@ -729,6 +729,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const [cat, setCat] = useState(null);
   const [sub, setSub] = useState(null);
   const [orphelines, setOrphelines] = useState([]);
+  const [sidebarBump, setSidebarBump] = useState(0);
   const [showOrphelines, setShowOrphelines] = useState(false);
   const [rappelDate, setRappelDate] = useState("");
   const [rappelHeure, setRappelHeure] = useState("");
@@ -873,6 +874,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       bump();
       loadStats();
       loadOrphelines();
+      setSidebarBump((n) => n + 1);
     } catch (e) { setError(e.message); } finally { setSubmitting(false); }
   }
 
@@ -1036,6 +1038,19 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
             <div className="mono flex items-center gap-1.5" style={{ padding: "7px 18px", background: C.canvas, borderBottom: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.muted }}>
               <Clock size={11} /> {ficheElapsedStr} sur cette fiche
             </div>
+            {lastQualif && (
+              <div style={{ padding: "10px 18px", background: C.amberSoft, borderBottom: `1px solid ${C.amber}` }}>
+                <div className="flex items-center gap-1.5" style={{ fontSize: 10.5, color: C.ink, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em" }}>
+                  <History size={12} color={C.amber} /> Déjà contactée · {new Date(lastQualif.created_at).toLocaleDateString("fr-FR")}
+                </div>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginTop: 2 }}>
+                  {lastQualif.types_qualification?.categorie} · {lastQualif.types_qualification?.motif}
+                </div>
+                {lastQualif.commentaire && (
+                  <p style={{ fontSize: 11.5, color: C.muted, marginTop: 3, lineHeight: 1.4, fontStyle: "italic" }}>« {lastQualif.commentaire} »</p>
+                )}
+              </div>
+            )}
             <div className="px-5 py-5">
               <h2 className="disp" style={{ fontSize: 19, fontWeight: 700 }}>{fiche.nom}</h2>
               <div style={{ height: 1, background: C.borderSoft, margin: "16px 0" }} />
@@ -1045,19 +1060,6 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                 <FicheField label="Type de segment" value={fiche.segment} icon={CircleDot} />
                 <FicheField label="Commune" value={fiche.commune} icon={Building2} />
               </div>
-              {lastQualif && (
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.border}` }}>
-                  <div className="flex items-center gap-1.5" style={{ fontSize: 11, color: C.mutedSoft, marginBottom: 5 }}>
-                    <History size={12} /> Dernier échange · {new Date(lastQualif.created_at).toLocaleDateString("fr-FR")}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>
-                    {lastQualif.types_qualification?.categorie} · {lastQualif.types_qualification?.motif}
-                  </div>
-                  {lastQualif.commentaire && (
-                    <p style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 1.5, fontStyle: "italic" }}>« {lastQualif.commentaire} »</p>
-                  )}
-                </div>
-              )}
             </div>
           </div>
 
@@ -1165,14 +1167,14 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
         </div>
       )}
       </div>
-      <AgentSidebar accessToken={accessToken} agentId={agentId} />
+      <AgentSidebar accessToken={accessToken} agentId={agentId} refreshTrigger={sidebarBump} />
       </div>
       )}
     </div>
   );
 }
 
-function AgentSidebar({ accessToken, agentId }) {
+function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
   const [rappels, setRappels] = useState(null);
   const [error, setError] = useState(null);
   const [showTraitees, setShowTraitees] = useState(false);
@@ -1194,20 +1196,43 @@ function AgentSidebar({ accessToken, agentId }) {
   }, [accessToken, agentId]);
 
   useEffect(() => { loadRappels(); const t = setInterval(loadRappels, 30000); return () => clearInterval(t); }, [loadRappels]);
+  // Rafraîchissement immédiat dès qu'une qualification vient d'être validée
+  // (sans attendre le prochain cycle de 30s) — évite qu'un rappel tout juste
+  // traité reste visible dans la liste pendant jusqu'à 30 secondes.
+  // Un second rafraîchissement, décalé d'1,5s, sert de filet de sécurité au
+  // cas où la lecture immédiate arriverait avant que l'écriture ne soit
+  // pleinement visible côté base.
+  useEffect(() => {
+    if (!refreshTrigger) return;
+    loadRappels();
+    const t = setTimeout(loadRappels, 1500);
+    return () => clearTimeout(t);
+  }, [refreshTrigger]); // eslint-disable-line
+
+  const fetchTraitees = useCallback(async () => {
+    try {
+      const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+      const rows = await supaRest(
+        `qualifications?select=created_at,commentaire,types_qualification(categorie,motif),clients(nom,numero_fiche)&agent_id=eq.${agentId}&created_at=gte.${startOfDay.toISOString()}&order=created_at.desc`,
+        { accessToken }
+      );
+      setTraitees(rows);
+    } catch { setTraitees([]); }
+  }, [accessToken, agentId]);
 
   async function loadTraitees() {
-    if (traitees === null) {
-      try {
-        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
-        const rows = await supaRest(
-          `qualifications?select=created_at,commentaire,types_qualification(categorie,motif),clients(nom,numero_fiche)&agent_id=eq.${agentId}&created_at=gte.${startOfDay.toISOString()}&order=created_at.desc`,
-          { accessToken }
-        );
-        setTraitees(rows);
-      } catch { setTraitees([]); }
-    }
+    if (traitees === null) await fetchTraitees();
     setShowTraitees((v) => !v);
   }
+
+  // Si la liste est déjà ouverte, la rafraîchir dès qu'une qualification vient
+  // d'être validée — avec le même filet de sécurité décalé de 1,5s.
+  useEffect(() => {
+    if (!refreshTrigger || !showTraitees) return;
+    fetchTraitees();
+    const t = setTimeout(fetchTraitees, 1500);
+    return () => clearTimeout(t);
+  }, [refreshTrigger]); // eslint-disable-line
 
   function jourLabel(dateStr) {
     const d = new Date(dateStr);
