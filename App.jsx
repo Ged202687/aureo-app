@@ -2576,8 +2576,30 @@ function ImportPanel({ accessToken, bump }) {
     if (payload.length === 0) { setError("Aucune ligne exploitable trouvée dans ce fichier."); return; }
     setBusy(true);
     try {
-      await supaRest("clients", { method: "POST", accessToken, body: payload });
-      setSummary({ fileName, count: payload.length });
+      // Détection des doublons : un client déjà présent en base (n'importe
+      // quelle campagne) ne doit jamais être réimporté une seconde fois —
+      // même principe que la création manuelle depuis le poste de travail.
+      const telephones = [...new Set(payload.map((p) => p.telephone).filter(Boolean))];
+      const boxes = [...new Set(payload.map((p) => p.numero_box).filter(Boolean))];
+      const [parTelephone, parBox] = await Promise.all([
+        fetchInChunks("clients?select=telephone&telephone=in.(", telephones, accessToken),
+        fetchInChunks("clients?select=numero_box&numero_box=in.(", boxes, accessToken),
+      ]);
+      const telephonesExistants = new Set(parTelephone.map((c) => c.telephone));
+      const boxesExistants = new Set(parBox.map((c) => c.numero_box));
+
+      const aInserer = [];
+      let doublons = 0;
+      for (const p of payload) {
+        const dejaLa = (p.telephone && telephonesExistants.has(p.telephone)) || (p.numero_box && boxesExistants.has(p.numero_box));
+        if (dejaLa) doublons++;
+        else aInserer.push(p);
+      }
+
+      if (aInserer.length > 0) {
+        await supaRest("clients", { method: "POST", accessToken, body: aInserer });
+      }
+      setSummary({ fileName, count: aInserer.length, doublons });
       setError(null);
       bump();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
@@ -2747,8 +2769,16 @@ function ImportPanel({ accessToken, bump }) {
           </div>
 
           {summary && (
-            <div className="flex items-center gap-2 mt-4" style={{ background: C.greenSoft, color: C.green, borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 500, maxWidth: 520 }}>
-              <CheckCircle2 size={15} /> {summary.count} fiche(s) importée(s) depuis « {summary.fileName} ».
+            <div className="flex flex-col gap-1.5 mt-4" style={{ maxWidth: 520 }}>
+              <div className="flex items-center gap-2" style={{ background: C.greenSoft, color: C.green, borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 500 }}>
+                <CheckCircle2 size={15} /> {summary.count} fiche(s) importée(s) depuis « {summary.fileName} ».
+              </div>
+              {summary.doublons > 0 && (
+                <div className="flex items-center gap-2" style={{ background: C.amberSoft, color: C.ink, borderRadius: 9, padding: "10px 14px", fontSize: 12.5 }}>
+                  <AlertTriangle size={14} color={C.amber} />
+                  {summary.doublons} ligne{summary.doublons !== 1 ? "s" : ""} ignorée{summary.doublons !== 1 ? "s" : ""} — numéro de téléphone ou de box déjà présent en base.
+                </div>
+              )}
             </div>
           )}
           {error && <div className="mt-4"><ErrorBlock message={error} /></div>}
