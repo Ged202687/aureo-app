@@ -1033,7 +1033,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
             <div style={{ background: C.ink, color: "#fff", padding: "14px 18px" }} className="flex items-center justify-between">
               <span className="mono flex items-center gap-3" style={{ fontSize: 11, letterSpacing: "0.04em", color: "#A6ADBA" }}>
                 <span className="flex items-center gap-1"><Hash size={11} />{fiche.numero_fiche}</span>
-                {fiche.numero_box && <span style={{ color: "#6B7280" }}>Box {fiche.numero_box}</span>}
+                {fiche.numero_box && <span style={{ color: "#D7DAEC" }}>Box {fiche.numero_box}</span>}
               </span>
               <span style={{ fontSize: 10.5, background: C.amber, color: C.ink, padding: "2px 8px", borderRadius: 999, fontWeight: 600 }}>EN COURS</span>
             </div>
