@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, Plus, Trash2, UserCircle2, FastForward, Inbox, ArrowRight,
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
-  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown,
+  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -452,15 +452,16 @@ function useElapsed(since) {
 }
 
 const ROLE_DEFAULT_TABS = {
-  super_admin: ["dashboard", "queue", "recherche", "presence", "export", "import", "campagnes", "equipes", "utilisateurs", "rules"],
-  admin: ["dashboard", "queue", "recherche", "presence", "export", "import", "campagnes", "utilisateurs", "rules"],
-  superviseur: ["dashboard", "queue", "recherche", "presence", "export"],
-  coach: ["poste", "dashboard", "export"],
-  agent: ["poste"],
+  super_admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "equipes", "utilisateurs", "rules"],
+  admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "utilisateurs", "rules"],
+  superviseur: ["dashboard", "resultats", "queue", "recherche", "presence", "export"],
+  coach: ["poste", "dashboard", "resultats", "export"],
+  agent: ["poste", "resultats"],
 };
 const TAB_DEFS = [
   { id: "poste", label: "Poste de travail", icon: Inbox },
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "resultats", label: "Mes résultats", icon: Award },
   { id: "queue", label: "File d'attente", icon: Users },
   { id: "recherche", label: "Recherche", icon: Search },
   { id: "presence", label: "Présence", icon: Timer },
@@ -556,6 +557,11 @@ function Workspace({ session, onLogout, onProfilChange }) {
 
   useEffect(() => { loadTree(); }, [loadTree]);
 
+  // En mode "aperçu agent" (bascule Admin/Superviseur → Agent), on affiche
+  // toujours exactement ce qu'un agent voit par défaut — pas les permissions
+  // réelles du compte connecté, qui resteraient sinon visibles en aperçu.
+  const effectiveTabs = role === "agent" ? new Set(ROLE_DEFAULT_TABS.agent) : visibleTabs;
+
   return (
     <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: C.canvas, color: C.text, minHeight: "100vh" }}>
       <style>{`@import url('${FONTS}');
@@ -581,7 +587,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               <div className="px-5 pt-4">
                 <div style={{ background: C.inkSoft, borderRadius: 10, padding: 4 }} className="flex gap-1">
                   {["agent", "admin"].map((r) => (
-                    <button key={r} onClick={() => setRole(r)}
+                    <button key={r} onClick={() => { setRole(r); setAdminTab(r === "agent" ? "poste" : (ROLE_DEFAULT_TABS[profil?.role] || ["dashboard"])[0]); }}
                       style={{ flex: 1, padding: "7px 0", borderRadius: 7, border: "none", background: role === r ? C.amber : "transparent", color: role === r ? C.ink : "#A6ADBA", fontSize: 12.5, fontWeight: 600 }}>
                       {r === "agent" ? "Agent" : "Admin"}
                     </button>
@@ -591,13 +597,9 @@ function Workspace({ session, onLogout, onProfilChange }) {
             )}
 
             <nav className="px-3 pt-5 flex flex-col gap-1">
-              {role === "agent" ? (
-                <NavItem icon={Inbox} label="Poste de travail" active onClick={() => setAdminTab("poste")} />
-              ) : (
-                TAB_DEFS.filter((t) => visibleTabs.has(t.id)).map((t) => (
-                  <NavItem key={t.id} icon={t.icon} label={t.label} active={adminTab === t.id} onClick={() => setAdminTab(t.id)} />
-                ))
-              )}
+              {TAB_DEFS.filter((t) => effectiveTabs.has(t.id)).map((t) => (
+                <NavItem key={t.id} icon={t.icon} label={t.label} active={adminTab === t.id} onClick={() => setAdminTab(t.id)} />
+              ))}
             </nav>
           </div>
 
@@ -665,21 +667,20 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <CenterLoader />
           ) : treeError ? (
             <ErrorBlock message={treeError} />
-          ) : role === "agent" ? (
-            <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />
           ) : (
             <>
-              {adminTab === "poste" && visibleTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
-              {adminTab === "dashboard" && visibleTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
-              {adminTab === "queue" && visibleTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
-              {adminTab === "recherche" && visibleTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} />}
-              {adminTab === "presence" && visibleTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
-              {adminTab === "export" && visibleTabs.has("export") && <ExportPanel accessToken={accessToken} />}
-              {adminTab === "import" && visibleTabs.has("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
-              {adminTab === "campagnes" && visibleTabs.has("campagnes") && <CampaignsPanel accessToken={accessToken} />}
-              {adminTab === "equipes" && visibleTabs.has("equipes") && <EquipesPanel accessToken={accessToken} />}
-              {adminTab === "utilisateurs" && visibleTabs.has("utilisateurs") && <UsersPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
-              {adminTab === "rules" && visibleTabs.has("rules") && <Rules accessToken={accessToken} tree={tree} reload={loadTree} />}
+              {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
+              {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
+              {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} />}
+              {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
+              {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} />}
+              {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
+              {adminTab === "export" && effectiveTabs.has("export") && <ExportPanel accessToken={accessToken} />}
+              {adminTab === "import" && effectiveTabs.has("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
+              {adminTab === "campagnes" && effectiveTabs.has("campagnes") && <CampaignsPanel accessToken={accessToken} />}
+              {adminTab === "equipes" && effectiveTabs.has("equipes") && <EquipesPanel accessToken={accessToken} />}
+              {adminTab === "utilisateurs" && effectiveTabs.has("utilisateurs") && <UsersPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
+              {adminTab === "rules" && effectiveTabs.has("rules") && <Rules accessToken={accessToken} tree={tree} reload={loadTree} />}
             </>
           )}
         </main>
@@ -1866,6 +1867,160 @@ function FichesBloqueesEquipe({ accessToken }) {
             </button>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------- mes résultats (calendrier multi-sélection) ---------------------------------- */
+
+const JOURS_SEMAINE = ["L", "M", "M", "J", "V", "S", "D"];
+const MOIS_NOMS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+
+function toISODate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function MultiCalendar({ selected, onToggle }) {
+  const [viewDate, setViewDate] = useState(new Date());
+  const annee = viewDate.getFullYear(), mois = viewDate.getMonth();
+  const premierJour = new Date(annee, mois, 1);
+  const decalage = (premierJour.getDay() + 6) % 7; // lundi = 0
+  const nbJours = new Date(annee, mois + 1, 0).getDate();
+  const todayISO = toISODate(new Date());
+
+  const cases = [];
+  for (let i = 0; i < decalage; i++) cases.push(null);
+  for (let j = 1; j <= nbJours; j++) cases.push(j);
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, width: 300 }}>
+      <div className="flex items-center justify-between mb-3">
+        <button onClick={() => setViewDate(new Date(annee, mois - 1, 1))} style={{ background: "none", border: "none", padding: 4, color: C.muted }}>
+          <ArrowRight size={14} style={{ transform: "rotate(180deg)" }} />
+        </button>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>{MOIS_NOMS[mois]} {annee}</span>
+        <button onClick={() => setViewDate(new Date(annee, mois + 1, 1))} style={{ background: "none", border: "none", padding: 4, color: C.muted }}>
+          <ArrowRight size={14} />
+        </button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 4 }}>
+        {JOURS_SEMAINE.map((j, i) => (
+          <div key={i} style={{ textAlign: "center", fontSize: 10, color: C.mutedSoft, fontWeight: 600 }}>{j}</div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3 }}>
+        {cases.map((jour, i) => {
+          if (jour === null) return <div key={i} />;
+          const iso = toISODate(new Date(annee, mois, jour));
+          const isSelected = selected.includes(iso);
+          const isToday = iso === todayISO;
+          return (
+            <button key={i} onClick={() => onToggle(iso)}
+              style={{
+                aspectRatio: "1", borderRadius: 7, fontSize: 12, fontWeight: isSelected ? 700 : 500,
+                background: isSelected ? C.ink : "transparent", color: isSelected ? "#fff" : C.text,
+                border: isToday && !isSelected ? `1.5px solid ${C.amber}` : "1.5px solid transparent",
+              }}>
+              {jour}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MesResultatsPanel({ accessToken }) {
+  const [selected, setSelected] = useState([toISODate(new Date())]);
+  const [stats, setStats] = useState(null);
+  const [error, setError] = useState(null);
+
+  function toggleDate(iso) {
+    setSelected((prev) => prev.includes(iso) ? prev.filter((d) => d !== iso) : [...prev, iso].sort());
+  }
+
+  const load = useCallback(async () => {
+    if (selected.length === 0) { setStats({ appels_traites: 0, rechargements_valides: 0, rechargements_valides_mois: 0 }); return; }
+    try {
+      const [row] = await rpc("mes_resultats", accessToken, { p_dates: selected });
+      setStats(row || { appels_traites: 0, rechargements_valides: 0, rechargements_valides_mois: 0 });
+    } catch (e) { setError(e.message); }
+  }, [accessToken, selected]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const raccourcis = [
+    { label: "Aujourd'hui", get: () => [toISODate(new Date())] },
+    { label: "Cette semaine", get: () => {
+      const now = new Date(); const jour = (now.getDay() + 6) % 7;
+      const debut = new Date(now.getFullYear(), now.getMonth(), now.getDate() - jour);
+      return Array.from({ length: 7 }, (_, i) => toISODate(new Date(debut.getFullYear(), debut.getMonth(), debut.getDate() + i)));
+    } },
+    { label: "Ce mois", get: () => {
+      const now = new Date(); const nb = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      return Array.from({ length: nb }, (_, i) => toISODate(new Date(now.getFullYear(), now.getMonth(), i + 1)));
+    } },
+  ];
+
+  return (
+    <div>
+      <header className="mb-6">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Mes résultats</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Sélectionnez une ou plusieurs dates dans le calendrier pour voir vos résultats sur cette période.</p>
+      </header>
+
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
+        <div>
+          <MultiCalendar selected={selected} onToggle={toggleDate} />
+          <div className="flex flex-wrap gap-1.5 mt-3">
+            {raccourcis.map((r) => (
+              <button key={r.label} onClick={() => setSelected(r.get())}
+                style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 999, padding: "5px 11px", fontSize: 11.5, color: C.text }}>
+                {r.label}
+              </button>
+            ))}
+            {selected.length > 0 && (
+              <button onClick={() => setSelected([])}
+                style={{ background: "none", border: "none", padding: "5px 6px", fontSize: 11.5, color: C.mutedSoft }}>
+                Effacer
+              </button>
+            )}
+          </div>
+          <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 8 }}>
+            {selected.length} jour{selected.length !== 1 ? "s" : ""} sélectionné{selected.length !== 1 ? "s" : ""}.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div style={{ background: C.ink, borderRadius: 12, padding: 20 }}>
+              <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+                <CheckCircle2 size={14} color="#A6ADBA" />
+                <span style={{ fontSize: 12, color: "#A6ADBA", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em" }}>Appels traités</span>
+              </div>
+              <div className="disp mono" style={{ fontSize: 34, fontWeight: 700, color: "#fff" }}>{stats ? stats.appels_traites : "…"}</div>
+              <div style={{ fontSize: 11.5, color: "#8B93A3", marginTop: 4 }}>Sur les dates sélectionnées</div>
+            </div>
+            <div style={{ background: C.ink, borderRadius: 12, padding: 20 }}>
+              <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+                <Award size={14} color={C.amber} />
+                <span style={{ fontSize: 12, color: "#A6ADBA", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em" }}>Rechargements validés</span>
+              </div>
+              <div className="disp mono" style={{ fontSize: 34, fontWeight: 700, color: C.amber }}>{stats ? stats.rechargements_valides : "…"}</div>
+              <div style={{ fontSize: 11.5, color: "#8B93A3", marginTop: 4 }}>Sur les dates sélectionnées</div>
+            </div>
+          </div>
+          <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, padding: "16px 20px" }} className="flex items-center justify-between">
+            <div>
+              <div style={{ fontSize: 12, color: C.ink, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em" }}>Total rechargements validés — {MOIS_NOMS[new Date().getMonth()]}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Sur le mois calendaire en cours, indépendamment des dates choisies ci-dessus.</div>
+            </div>
+            <div className="disp mono" style={{ fontSize: 30, fontWeight: 700, color: C.ink }}>{stats ? stats.rechargements_valides_mois : "…"}</div>
+          </div>
+        </div>
       </div>
     </div>
   );
