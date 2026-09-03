@@ -784,12 +784,12 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     try {
       const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
       const rows = await supaRest(
-        `qualifications?select=est_rappel,types_qualification(est_vente)&agent_id=eq.${agentId}&created_at=gte.${startOfDay.toISOString()}`,
+        `qualifications?select=types_qualification(categorie,est_vente)&agent_id=eq.${agentId}&created_at=gte.${startOfDay.toISOString()}`,
         { accessToken }
       );
       setStats({
-        fiches: rows.filter((r) => !r.est_rappel).length,
-        rappels: rows.filter((r) => r.est_rappel).length,
+        fiches: rows.length,
+        rappels: rows.filter((r) => r.types_qualification?.categorie === "À rappeler").length,
         ventes: rows.filter((r) => r.types_qualification?.est_vente).length,
       });
     } catch {}
