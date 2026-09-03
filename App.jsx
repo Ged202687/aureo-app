@@ -247,6 +247,31 @@ export default function App() {
     }
   }
 
+  // Rafraîchit le jeton d'accès en arrière-plan pendant une session active —
+  // jusqu'ici, seule la restauration au chargement de page (F5) rafraîchissait
+  // le jeton. Sans ça, un agent resté connecté en continu plus d'une heure
+  // (durée de vie typique d'un jeton Supabase) verrait ses appels échouer
+  // silencieusement jusqu'au prochain rechargement.
+  const refreshAccessToken = useCallback(async () => {
+    if (!session?.refreshToken) return;
+    try {
+      const refreshed = await supaAuth("token?grant_type=refresh_token", { refresh_token: session.refreshToken });
+      const updated = { ...session, accessToken: refreshed.access_token, refreshToken: refreshed.refresh_token };
+      setSession(updated);
+      saveSessionStorage(updated);
+    } catch {
+      // Échec du rafraîchissement (jeton révoqué, etc.) — les prochains
+      // appels API échoueront et l'agent sera renvoyé à l'écran de
+      // connexion via la gestion d'erreur déjà en place ailleurs.
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    const t = setInterval(refreshAccessToken, 45 * 60 * 1000); // toutes les 45 min, avant l'expiration (~60 min)
+    return () => clearInterval(t);
+  }, [session, refreshAccessToken]);
+
   async function handleLogout() {
     if (session) {
       try { await supaRest(`pause_details?agent_id=eq.${session.user.id}&fin=is.null`, { method: "PATCH", accessToken: session.accessToken, body: { fin: new Date().toISOString() } }); } catch {}
