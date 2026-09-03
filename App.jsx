@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, Fragment } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import {
@@ -698,7 +698,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
-              {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} />}
+              {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
               {adminTab === "export" && effectiveTabs.has("export") && <ExportPanel accessToken={accessToken} />}
               {adminTab === "import" && effectiveTabs.has("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
@@ -1616,11 +1616,40 @@ function EmptyOrOutcome({ outcome, onPull, pulling, onCreateClient }) {
 
 /* ---------------------------------- recherche (agent + admin) ---------------------------------- */
 
-function SearchPanel({ accessToken, tree }) {
+function SearchPanel({ accessToken, tree, isAdmin }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [derniereQualif, setDerniereQualif] = useState(null);
+  const [annulationEnCours, setAnnulationEnCours] = useState(false);
+  const [confirmAnnulation, setConfirmAnnulation] = useState(false);
+
+  async function toggleExpand(client) {
+    if (expandedId === client.id) { setExpandedId(null); return; }
+    setExpandedId(client.id); setDerniereQualif(undefined); setConfirmAnnulation(false);
+    try {
+      const rows = await supaRest(
+        `qualifications?select=id,created_at,commentaire,agent_id,types_qualification(categorie,motif),profils(nom)&client_id=eq.${client.id}&order=created_at.desc&limit=1`,
+        { accessToken }
+      );
+      setDerniereQualif(rows[0] || null);
+    } catch { setDerniereQualif(null); }
+  }
+
+  async function annuler(clientId) {
+    setAnnulationEnCours(true); setError(null);
+    try {
+      await rpc("annuler_derniere_qualification", accessToken, { p_client_id: clientId });
+      setExpandedId(null); setConfirmAnnulation(false);
+      runSearchAgain();
+    } catch (e) { setError(e.message); } finally { setAnnulationEnCours(false); }
+  }
+
+  function runSearchAgain() {
+    if (query.trim()) runSearch({ preventDefault: () => {} });
+  }
 
   async function runSearch(e) {
     e.preventDefault();
@@ -1673,8 +1702,10 @@ function SearchPanel({ accessToken, tree }) {
               <tbody>
                 {results.map((c) => {
                   const meta = STATUS_META[c.statut];
+                  const isExpanded = expandedId === c.id;
                   return (
-                    <tr key={c.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                    <Fragment key={c.id}>
+                    <tr onClick={() => toggleExpand(c)} style={{ borderTop: `1px solid ${C.borderSoft}`, cursor: "pointer", background: isExpanded ? C.canvas : "transparent" }}>
                       <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_fiche}</td>
                       <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_box || "—"}</td>
                       <td style={{ padding: "10px 16px", fontWeight: 500 }}>{c.nom}</td>
@@ -1683,6 +1714,52 @@ function SearchPanel({ accessToken, tree }) {
                         <span style={{ background: meta.soft, color: meta.color, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
                       </td>
                     </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={5} style={{ padding: "14px 16px", background: C.canvas, borderTop: `1px solid ${C.borderSoft}` }}>
+                          {derniereQualif === undefined ? (
+                            <CenterLoader />
+                          ) : derniereQualif === null ? (
+                            <p style={{ fontSize: 12.5, color: C.mutedSoft }}>Aucune qualification enregistrée pour cette fiche.</p>
+                          ) : (
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+                                  {derniereQualif.types_qualification?.categorie} · {derniereQualif.types_qualification?.motif}
+                                </div>
+                                <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+                                  Par {derniereQualif.profils?.nom || "agent"} · {new Date(derniereQualif.created_at).toLocaleString("fr-FR")}
+                                </div>
+                                {derniereQualif.commentaire && (
+                                  <p style={{ fontSize: 11.5, color: C.muted, marginTop: 4, fontStyle: "italic" }}>« {derniereQualif.commentaire} »</p>
+                                )}
+                              </div>
+                              {isAdmin && (
+                                confirmAnnulation ? (
+                                  <div className="flex items-center gap-2">
+                                    <span style={{ fontSize: 11.5, color: C.red }}>Confirmer l'annulation ?</span>
+                                    <button onClick={() => annuler(c.id)} disabled={annulationEnCours}
+                                      style={{ background: C.red, color: "#fff", border: "none", borderRadius: 7, padding: "7px 12px", fontSize: 12, fontWeight: 600 }}>
+                                      {annulationEnCours ? <Loader2 size={12} className="animate-spin" /> : "Oui, annuler"}
+                                    </button>
+                                    <button onClick={() => setConfirmAnnulation(false)}
+                                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 12px", fontSize: 12 }}>
+                                      Non
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button onClick={() => setConfirmAnnulation(true)}
+                                    className="flex items-center gap-1.5" style={{ background: "none", border: `1px solid ${C.red}`, color: C.red, borderRadius: 7, padding: "7px 12px", fontSize: 12, fontWeight: 600 }}>
+                                    <RotateCcw size={12} /> Annuler cette qualification
+                                  </button>
+                                )
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>
