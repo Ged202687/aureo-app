@@ -881,7 +881,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     const catObj = tree.find((t) => t.categorie === cat);
     const subObj = catObj.subs.find((s) => s.id === sub);
     const dureeSecondes = ficheStartRef.current ? Math.round((Date.now() - ficheStartRef.current) / 1000) : null;
-    const visibleApres = (cat === "À rappeler" || subObj.motif === "RDV programmé") && rappelDate && rappelHeure
+    const visibleApres = subObj.necessite_calendrier && rappelDate && rappelHeure
       ? new Date(`${rappelDate}T${rappelHeure}`).toISOString()
       : null;
     const commentaireFinal = (subObj.motif === "Rechargement validé" && dateValidation)
@@ -1101,7 +1101,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                 return (
                   <button key={c.categorie} onClick={() => {
                     setCat(c.categorie);
-                    setSub(c.categorie === "À rappeler" ? c.subs[0]?.id ?? null : null);
+                    setSub(null);
                     setRappelDate(""); setRappelHeure(""); setDateValidation("");
                   }}
                     style={{ background: isActive ? c.soft : C.surface, border: `1.5px solid ${isActive ? c.color : C.border}`, borderRadius: 10, padding: "14px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
@@ -1114,40 +1114,47 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
             {cat && (
               <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
-                {cat === "À rappeler" ? (
-                  <>
-                    <div className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: C.mutedSoft }}>
-                      <ArrowRight size={12} /> Jour et heure souhaités par le client
+                <div className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: C.mutedSoft }}><ArrowRight size={12} /> Motif précis</div>
+                <div className="flex flex-wrap gap-2">
+                  {tree.find((t) => t.categorie === cat).subs.map((s) => {
+                    const isActive = sub === s.id;
+                    const catColor = tree.find((t) => t.categorie === cat).color;
+                    return (
+                      <button key={s.id} onClick={() => { setSub(s.id); setRappelDate(""); setRappelHeure(""); }}
+                        style={{ border: `1.5px solid ${isActive ? catColor : C.border}`, background: isActive ? catColor : C.surface, color: isActive ? "#fff" : C.text, borderRadius: 999, padding: "7px 14px", fontSize: 12.5, fontWeight: 500 }}>
+                        {s.motif}
+                        {!s.terminale && (
+                          <span style={{ opacity: isActive ? 0.85 : 0.55, marginLeft: 6, fontSize: 11 }}>
+                            · {s.necessite_calendrier ? "date choisie" : (s.delai_heures < 24 ? `${s.delai_heures}h` : `${Math.round(s.delai_heures / 24)}j`)}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(() => {
+                  const motifActif = tree.find((t) => t.categorie === cat).subs.find((s) => s.id === sub);
+                  if (!motifActif?.necessite_calendrier) return null;
+                  return (
+                    <div style={{ marginTop: 12 }}>
+                      <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11, color: C.mutedSoft }}>
+                        <ArrowRight size={11} /> Jour et heure
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input type="date" value={rappelDate} min={new Date().toISOString().slice(0, 10)}
+                          onChange={(e) => setRappelDate(e.target.value)}
+                          style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
+                        <input type="time" value={rappelHeure} onChange={(e) => setRappelHeure(e.target.value)}
+                          style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <input type="date" value={rappelDate} min={new Date().toISOString().slice(0, 10)}
-                        onChange={(e) => setRappelDate(e.target.value)}
-                        style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
-                      <input type="time" value={rappelHeure} onChange={(e) => setRappelHeure(e.target.value)}
-                        style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: C.mutedSoft }}><ArrowRight size={12} /> Motif précis</div>
-                    <div className="flex flex-wrap gap-2">
-                      {tree.find((t) => t.categorie === cat).subs.map((s) => {
-                        const isActive = sub === s.id;
-                        const catColor = tree.find((t) => t.categorie === cat).color;
-                        return (
-                          <button key={s.id} onClick={() => setSub(s.id)}
-                            style={{ border: `1.5px solid ${isActive ? catColor : C.border}`, background: isActive ? catColor : C.surface, color: isActive ? "#fff" : C.text, borderRadius: 999, padding: "7px 14px", fontSize: 12.5, fontWeight: 500 }}>
-                            {s.motif}
-                            {!s.terminale && <span style={{ opacity: isActive ? 0.85 : 0.55, marginLeft: 6, fontSize: 11 }}>· {s.delai_heures < 24 ? `${s.delai_heures}h` : `${Math.round(s.delai_heures / 24)}j`}</span>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {(() => {
-                      const motifActif = tree.find((t) => t.categorie === cat).subs.find((s) => s.id === sub);
-                      if (motifActif?.motif !== "Rechargement validé") return null;
-                      return (
-                        <div style={{ marginTop: 12 }}>
+                  );
+                })()}
+                {(() => {
+                  const motifActif = tree.find((t) => t.categorie === cat).subs.find((s) => s.id === sub);
+                  if (motifActif?.motif !== "Rechargement validé") return null;
+                  return (
+                    <div style={{ marginTop: 12 }}>
                           <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11, color: C.mutedSoft }}>
                             <ArrowRight size={11} /> Date de validation du rechargement
                           </div>
@@ -1157,32 +1164,12 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                         </div>
                       );
                     })()}
-                    {(() => {
-                      const motifActif = tree.find((t) => t.categorie === cat).subs.find((s) => s.id === sub);
-                      if (motifActif?.motif !== "RDV programmé") return null;
-                      return (
-                        <div style={{ marginTop: 12 }}>
-                          <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11, color: C.mutedSoft }}>
-                            <ArrowRight size={11} /> Date et heure du rendez-vous
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <input type="date" value={rappelDate} min={new Date().toISOString().slice(0, 10)}
-                              onChange={(e) => setRappelDate(e.target.value)}
-                              style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 11px", fontSize: 13 }} />
-                            <input type="time" value={rappelHeure} onChange={(e) => setRappelHeure(e.target.value)}
-                              style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 11px", fontSize: 13 }} />
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </>
-                )}
               </div>
             )}
 
             {(() => {
               const motifSelectionne = sub ? tree.find((t) => t.categorie === cat)?.subs.find((x) => x.id === sub) : null;
-              const necessiteDateHeure = cat === "À rappeler" || motifSelectionne?.motif === "RDV programmé";
+              const necessiteDateHeure = motifSelectionne?.necessite_calendrier === true;
               if (!sub || (necessiteDateHeure && !(rappelDate && rappelHeure))) return null;
               return (
               <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px dashed ${C.border}` }}>
@@ -3908,6 +3895,21 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
   const [permsEnCours, setPermsEnCours] = useState({ effective: new Set(), overrides: {} });
   const [permsBusy, setPermsBusy] = useState(false);
 
+  const [changingRoleId, setChangingRoleId] = useState(null);
+  const [nouveauRole, setNouveauRole] = useState("");
+  const [changingRoleBusy, setChangingRoleBusy] = useState(false);
+  const [changingRoleError, setChangingRoleError] = useState(null);
+
+  async function confirmerChangementRole() {
+    if (!nouveauRole) return;
+    setChangingRoleBusy(true); setChangingRoleError(null);
+    try {
+      await rpc("changer_role", accessToken, { p_profil_id: changingRoleId, p_nouveau_role: nouveauRole });
+      setChangingRoleId(null); setNouveauRole("");
+      load();
+    } catch (e) { setChangingRoleError(e.message); } finally { setChangingRoleBusy(false); }
+  }
+
   const [superviseursDispo, setSuperviseursDispo] = useState([]);
   const [adminsDispo, setAdminsDispo] = useState([]);
   const [rattachBusy, setRattachBusy] = useState(false);
@@ -4197,6 +4199,12 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
                               <Key size={13} color={C.mutedSoft} />
                             </button>
                           )}
+                          {isSuperAdmin && c.role !== "super_admin" && (
+                            <button onClick={() => { setChangingRoleId(c.id); setNouveauRole(""); setChangingRoleError(null); setManagingPermsId(null); }} title="Changer le rôle"
+                              style={{ background: "none", border: "none", padding: 5 }}>
+                              <Award size={13} color={C.mutedSoft} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </>
@@ -4291,6 +4299,39 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
           </div>
         );
       })()}
+
+      {changingRoleId && (() => {
+        const cible = comptes.find((c) => c.id === changingRoleId);
+        if (!cible) return null;
+        const roleLabelMap = { agent: "Agent", coach: "Coach", superviseur: "Superviseur", admin: "Admin", super_admin: "Super Admin" };
+        const rolesPossibles = ["agent", "coach", "superviseur", "admin", "super_admin"].filter((r) => r !== cible.role);
+        return (
+          <div style={{ background: C.surface, border: `1.5px solid ${C.ink}`, borderRadius: 12, padding: 18, marginTop: 20, maxWidth: 480 }}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Award size={14} color={C.muted} />
+                <h3 className="disp" style={{ fontSize: 14, fontWeight: 700 }}>Changer le rôle — {cible.nom}</h3>
+              </div>
+              <button onClick={() => setChangingRoleId(null)} style={{ background: "none", border: "none", color: C.mutedSoft, padding: 4 }}><X size={15} /></button>
+            </div>
+            <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 12 }}>
+              Rôle actuel : <strong>{roleLabelMap[cible.role]}</strong>. Le rattachement hiérarchique de l'ancien rôle (équipe, superviseur ou admin) sera effacé — à reconfigurer ensuite si besoin.
+            </p>
+            {changingRoleError && <div className="mb-3"><ErrorBlock message={changingRoleError} /></div>}
+            <div className="flex items-center gap-2">
+              <select value={nouveauRole} onChange={(e) => setNouveauRole(e.target.value)}
+                style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, background: C.surface }}>
+                <option value="">Choisir le nouveau rôle…</option>
+                {rolesPossibles.map((r) => <option key={r} value={r}>{roleLabelMap[r]}</option>)}
+              </select>
+              <button onClick={confirmerChangementRole} disabled={!nouveauRole || changingRoleBusy}
+                style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "8px 16px", fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                {changingRoleBusy && <Loader2 size={12} className="animate-spin" />} Confirmer
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -4305,6 +4346,7 @@ function Rules({ accessToken, tree, reload }) {
   const [newCatMotif, setNewCatMotif] = useState("");
   const [newCatDelay, setNewCatDelay] = useState(24);
   const [newCatTerminal, setNewCatTerminal] = useState(false);
+  const [newCatCalendrier, setNewCatCalendrier] = useState(false);
   const [creatingCat, setCreatingCat] = useState(false);
 
   async function updateSub(id, patch) {
@@ -4319,10 +4361,10 @@ function Rules({ accessToken, tree, reload }) {
       reload();
     } catch (e) { setError(e.message); }
   }
-  async function addSub(categorie, motif, delaiHeures, terminale, ordre, estContact = true, estVente = false) {
+  async function addSub(categorie, motif, delaiHeures, terminale, ordre, estContact = true, estVente = false, necessiteCalendrier = false) {
     if (!motif.trim()) return;
     try {
-      await supaRest("types_qualification", { method: "POST", accessToken, body: { categorie, motif, terminale, delai_heures: terminale ? 0 : delaiHeures, ordre, est_contact: estContact, est_vente: estVente } });
+      await supaRest("types_qualification", { method: "POST", accessToken, body: { categorie, motif, terminale, delai_heures: terminale ? 0 : delaiHeures, ordre, est_contact: estContact, est_vente: estVente, necessite_calendrier: necessiteCalendrier } });
       reload();
     } catch (e) { setError(e.message); }
   }
@@ -4338,9 +4380,9 @@ function Rules({ accessToken, tree, reload }) {
     try {
       await supaRest("types_qualification", {
         method: "POST", accessToken,
-        body: { categorie: nom, motif: newCatMotif.trim(), terminale: newCatTerminal, delai_heures: newCatTerminal ? 0 : newCatDelay, ordre: 1 },
+        body: { categorie: nom, motif: newCatMotif.trim(), terminale: newCatTerminal, delai_heures: newCatTerminal ? 0 : newCatDelay, ordre: 1, necessite_calendrier: newCatCalendrier },
       });
-      setShowNewCat(false); setNewCatName(""); setNewCatMotif(""); setNewCatDelay(24); setNewCatTerminal(false);
+      setShowNewCat(false); setNewCatName(""); setNewCatMotif(""); setNewCatDelay(24); setNewCatTerminal(false); setNewCatCalendrier(false);
       reload();
     } catch (e) { setError(e.message); } finally { setCreatingCat(false); }
   }
@@ -4367,13 +4409,18 @@ function Rules({ accessToken, tree, reload }) {
           <div className="flex items-center gap-2">
             <input value={newCatMotif} onChange={(e) => setNewCatMotif(e.target.value)} placeholder="Premier motif de cette catégorie…"
               style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 12.5 }} />
-            {!newCatTerminal && (
+            {!newCatTerminal && !newCatCalendrier && (
               <input type="number" min={0} step={1} value={newCatDelay} onChange={(e) => setNewCatDelay(parseFloat(e.target.value) || 0)}
                 className="mono" style={{ width: 56, border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 6px", fontSize: 12 }} />
             )}
             <label className="flex items-center gap-1" style={{ fontSize: 11, color: C.muted, whiteSpace: "nowrap" }}>
               <input type="checkbox" checked={newCatTerminal} onChange={(e) => setNewCatTerminal(e.target.checked)} /> Terminale
             </label>
+            {!newCatTerminal && (
+              <label className="flex items-center gap-1" style={{ fontSize: 11, color: C.muted, whiteSpace: "nowrap" }}>
+                <input type="checkbox" checked={newCatCalendrier} onChange={(e) => setNewCatCalendrier(e.target.checked)} /> Calendrier
+              </label>
+            )}
             <button onClick={createCategory} disabled={creatingCat}
               style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 7, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
               {creatingCat && <Loader2 size={12} className="animate-spin" />} Créer
@@ -4396,6 +4443,7 @@ function RuleCard({ cat, onUpdate, onDelete, onAdd }) {
   const [newLabel, setNewLabel] = useState("");
   const [newDelay, setNewDelay] = useState(24);
   const [newTerminal, setNewTerminal] = useState(false);
+  const [newCalendrier, setNewCalendrier] = useState(false);
   const [newContact, setNewContact] = useState(true);
   const [newVente, setNewVente] = useState(false);
   const Icon = cat.icon;
@@ -4420,6 +4468,11 @@ function RuleCard({ cat, onUpdate, onDelete, onAdd }) {
                 <input type="checkbox" checked={s.terminale} onChange={(e) => onUpdate(s.id, { terminale: e.target.checked })} /> Terminale
               </label>
               {!s.terminale && (
+                <label className="flex items-center gap-1" style={{ fontSize: 10.5, color: s.necessite_calendrier ? C.teal : C.muted, fontWeight: s.necessite_calendrier ? 600 : 400 }} title="L'agent choisit une date et une heure précises, plutôt qu'un délai fixe">
+                  <input type="checkbox" checked={!!s.necessite_calendrier} onChange={(e) => onUpdate(s.id, { necessite_calendrier: e.target.checked })} /> Calendrier
+                </label>
+              )}
+              {!s.terminale && !s.necessite_calendrier && (
                 <div className="flex items-center gap-1">
                   <input type="number" min={0} step={1} value={s.delai_heures} onChange={(e) => onUpdate(s.id, { delai_heures: parseFloat(e.target.value) || 0 })}
                     className="mono" style={{ width: 44, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 5px", fontSize: 11 }} />
@@ -4441,11 +4494,11 @@ function RuleCard({ cat, onUpdate, onDelete, onAdd }) {
         <div className="flex items-center gap-1.5 mb-2">
           <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="Nouveau motif…"
             style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 8px", fontSize: 12 }} />
-          {!newTerminal && (
+          {!newTerminal && !newCalendrier && (
             <input type="number" min={0} step={1} value={newDelay} onChange={(e) => setNewDelay(parseFloat(e.target.value) || 0)}
               className="mono" style={{ width: 46, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 5px", fontSize: 11.5 }} />
           )}
-          <button onClick={() => { onAdd(cat.categorie, newLabel, newDelay, newTerminal, maxOrdre + 1, newContact, newVente); setNewLabel(""); }}
+          <button onClick={() => { onAdd(cat.categorie, newLabel, newDelay, newTerminal, maxOrdre + 1, newContact, newVente, newCalendrier); setNewLabel(""); }}
             style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 6, padding: "6px 8px" }}>
             <Plus size={13} />
           </button>
@@ -4454,6 +4507,11 @@ function RuleCard({ cat, onUpdate, onDelete, onAdd }) {
           <label className="flex items-center gap-1" style={{ fontSize: 10.5, color: C.muted }}>
             <input type="checkbox" checked={newTerminal} onChange={(e) => setNewTerminal(e.target.checked)} /> Terminale
           </label>
+          {!newTerminal && (
+            <label className="flex items-center gap-1" style={{ fontSize: 10.5, color: C.muted }}>
+              <input type="checkbox" checked={newCalendrier} onChange={(e) => setNewCalendrier(e.target.checked)} /> Calendrier
+            </label>
+          )}
           <label className="flex items-center gap-1" style={{ fontSize: 10.5, color: C.muted }}>
             <input type="checkbox" checked={newContact} onChange={(e) => setNewContact(e.target.checked)} /> Contact
           </label>
