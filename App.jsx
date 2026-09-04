@@ -881,7 +881,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     const catObj = tree.find((t) => t.categorie === cat);
     const subObj = catObj.subs.find((s) => s.id === sub);
     const dureeSecondes = ficheStartRef.current ? Math.round((Date.now() - ficheStartRef.current) / 1000) : null;
-    const visibleApres = cat === "À rappeler" && rappelDate && rappelHeure
+    const visibleApres = (cat === "À rappeler" || subObj.motif === "RDV programmé") && rappelDate && rappelHeure
       ? new Date(`${rappelDate}T${rappelHeure}`).toISOString()
       : null;
     const commentaireFinal = (subObj.motif === "Rechargement validé" && dateValidation)
@@ -1157,22 +1157,45 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                         </div>
                       );
                     })()}
+                    {(() => {
+                      const motifActif = tree.find((t) => t.categorie === cat).subs.find((s) => s.id === sub);
+                      if (motifActif?.motif !== "RDV programmé") return null;
+                      return (
+                        <div style={{ marginTop: 12 }}>
+                          <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11, color: C.mutedSoft }}>
+                            <ArrowRight size={11} /> Date et heure du rendez-vous
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <input type="date" value={rappelDate} min={new Date().toISOString().slice(0, 10)}
+                              onChange={(e) => setRappelDate(e.target.value)}
+                              style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 11px", fontSize: 13 }} />
+                            <input type="time" value={rappelHeure} onChange={(e) => setRappelHeure(e.target.value)}
+                              style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 11px", fontSize: 13 }} />
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </>
                 )}
               </div>
             )}
 
-            {sub && (cat !== "À rappeler" || (rappelDate && rappelHeure)) && (
+            {(() => {
+              const motifSelectionne = sub ? tree.find((t) => t.categorie === cat)?.subs.find((x) => x.id === sub) : null;
+              const necessiteDateHeure = cat === "À rappeler" || motifSelectionne?.motif === "RDV programmé";
+              if (!sub || (necessiteDateHeure && !(rappelDate && rappelHeure))) return null;
+              return (
               <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px dashed ${C.border}` }}>
                 <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Commentaire (facultatif)…" rows={2}
                   style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, resize: "none", outline: "none" }} />
                 <div className="flex items-center justify-between mt-3">
                   {(() => {
-                    if (cat === "À rappeler") {
+                    if (necessiteDateHeure) {
                       const d = new Date(`${rappelDate}T${rappelHeure}`);
+                      const libelle = cat === "À rappeler" ? "Rappel programmé" : "Rendez-vous programmé";
                       return (
                         <span style={{ fontSize: 11.5, color: C.mutedSoft }}>
-                          → Rappel programmé le {d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} à {rappelHeure}.
+                          → {libelle} le {d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} à {rappelHeure}.
                         </span>
                       );
                     }
@@ -1189,7 +1212,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                   </button>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       )}
