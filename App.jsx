@@ -1345,6 +1345,7 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
 function AgentSearch({ accessToken, agentId, onAfficher }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
+  const [horsZone, setHorsZone] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [openingId, setOpeningId] = useState(null);
@@ -1352,15 +1353,28 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
   async function runSearch(e) {
     e.preventDefault();
     const q = query.trim();
-    if (!q) { setResults(null); return; }
-    setLoading(true); setError(null);
+    if (!q) { setResults(null); setHorsZone(false); return; }
+    setLoading(true); setError(null); setHorsZone(false);
     try {
+      // Périmètre de campagnes de l'agent, via ses lots (directs ou de groupe)
+      const membres = await supaRest(`groupes_agents_membres?select=groupe_id&agent_id=eq.${agentId}`, { accessToken });
+      const groupeIds = membres.map((m) => m.groupe_id);
+      const orPartsCibles = [`and(cible_type.eq.agent,agent_id.eq.${agentId})`];
+      if (groupeIds.length > 0) orPartsCibles.push(`and(cible_type.eq.groupe,groupe_id.in.(${groupeIds.join(",")}))`);
+      const cibles = await supaRest(`lots_cibles?select=lot_id&or=(${orPartsCibles.join(",")})`, { accessToken });
+      const monLotIds = [...new Set(cibles.map((c) => c.lot_id))];
+      const mesLots = monLotIds.length > 0 ? await supaRest(`lots?select=id,campagne_id&id=in.(${monLotIds.join(",")})`, { accessToken }) : [];
+      const mesCampagneIds = new Set(mesLots.map((l) => l.campagne_id));
+
       const escaped = q.replace(/[%,]/g, "");
       const isNumeric = /^\d+$/.test(q);
       const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`, `numero_box.ilike.*${escaped}*`];
       if (isNumeric) orParts.push(`numero_fiche.eq.${q}`);
-      const rows = await supaRest(`clients?select=*&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
-      setResults(rows);
+      const rows = await supaRest(`clients?select=*,lots(campagne_id)&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
+
+      const dansCampagne = rows.filter((r) => !r.lot_id || mesCampagneIds.has(r.lots?.campagne_id));
+      setResults(dansCampagne);
+      setHorsZone(dansCampagne.length === 0 && rows.length > 0);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
@@ -1388,8 +1402,13 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
       </form>
 
       {error && <ErrorBlock message={error} />}
+      {horsZone && (
+        <div className="flex items-center gap-2" style={{ background: C.redSoft, color: C.red, borderRadius: 9, padding: "12px 16px", fontSize: 13, maxWidth: 520 }}>
+          <AlertTriangle size={15} /> Vous n'avez pas le droit d'excéder votre zone de campagne.
+        </div>
+      )}
 
-      {results && (
+      {!horsZone && results && (
         results.length === 0 ? (
           <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
         ) : (
