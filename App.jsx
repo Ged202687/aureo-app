@@ -477,8 +477,8 @@ function useElapsed(since) {
 }
 
 const ROLE_DEFAULT_TABS = {
-  super_admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "equipes", "utilisateurs", "rules"],
-  admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "utilisateurs", "rules"],
+  super_admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
+  admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
   superviseur: ["dashboard", "resultats", "queue", "recherche", "presence", "export"],
   coach: ["poste", "dashboard", "resultats", "export"],
   agent: ["poste", "resultats"],
@@ -493,6 +493,7 @@ const TAB_DEFS = [
   { id: "export", label: "Export", icon: FileSpreadsheet },
   { id: "import", label: "Import", icon: Upload },
   { id: "campagnes", label: "Campagnes", icon: Megaphone },
+  { id: "recyclage", label: "Recyclage", icon: RefreshCw },
   { id: "equipes", label: "Équipes", icon: UsersRound },
   { id: "utilisateurs", label: "Utilisateurs", icon: UserCircle2 },
   { id: "rules", label: "Règles de qualification", icon: ListChecks },
@@ -703,6 +704,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "export" && effectiveTabs.has("export") && <ExportPanel accessToken={accessToken} />}
               {adminTab === "import" && effectiveTabs.has("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
               {adminTab === "campagnes" && effectiveTabs.has("campagnes") && <CampaignsPanel accessToken={accessToken} />}
+              {adminTab === "recyclage" && effectiveTabs.has("recyclage") && <RecyclagePanel accessToken={accessToken} />}
               {adminTab === "equipes" && effectiveTabs.has("equipes") && <EquipesPanel accessToken={accessToken} />}
               {adminTab === "utilisateurs" && effectiveTabs.has("utilisateurs") && <UsersPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
               {adminTab === "rules" && effectiveTabs.has("rules") && <Rules accessToken={accessToken} tree={tree} reload={loadTree} />}
@@ -1356,7 +1358,6 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
 function AgentSearch({ accessToken, agentId, onAfficher }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
-  const [horsZone, setHorsZone] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [openingId, setOpeningId] = useState(null);
@@ -1364,28 +1365,16 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
   async function runSearch(e) {
     e.preventDefault();
     const q = query.trim();
-    if (!q) { setResults(null); setHorsZone(false); return; }
-    setLoading(true); setError(null); setHorsZone(false);
+    if (!q) { setResults(null); return; }
+    setLoading(true); setError(null);
     try {
-      // Périmètre de campagnes de l'agent, via ses lots (directs ou de groupe)
-      const membres = await supaRest(`groupes_agents_membres?select=groupe_id&agent_id=eq.${agentId}`, { accessToken });
-      const groupeIds = membres.map((m) => m.groupe_id);
-      const orPartsCibles = [`and(cible_type.eq.agent,agent_id.eq.${agentId})`];
-      if (groupeIds.length > 0) orPartsCibles.push(`and(cible_type.eq.groupe,groupe_id.in.(${groupeIds.join(",")}))`);
-      const cibles = await supaRest(`lots_cibles?select=lot_id&or=(${orPartsCibles.join(",")})`, { accessToken });
-      const monLotIds = [...new Set(cibles.map((c) => c.lot_id))];
-      const mesLots = monLotIds.length > 0 ? await supaRest(`lots?select=id,campagne_id&id=in.(${monLotIds.join(",")})`, { accessToken }) : [];
-      const mesCampagneIds = new Set(mesLots.map((l) => l.campagne_id));
-
       const escaped = q.replace(/[%,]/g, "");
       const isNumeric = /^\d+$/.test(q);
       const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`, `numero_box.ilike.*${escaped}*`];
       if (isNumeric) orParts.push(`numero_fiche.eq.${q}`);
       const rows = await supaRest(`clients?select=*,lots(campagne_id)&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
 
-      const dansCampagne = rows.filter((r) => !r.lot_id || mesCampagneIds.has(r.lots?.campagne_id));
-      setResults(dansCampagne);
-      setHorsZone(dansCampagne.length === 0 && rows.length > 0);
+      setResults(rows);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
@@ -1413,13 +1402,8 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
       </form>
 
       {error && <ErrorBlock message={error} />}
-      {horsZone && (
-        <div className="flex items-center gap-2" style={{ background: C.redSoft, color: C.red, borderRadius: 9, padding: "12px 16px", fontSize: 13, maxWidth: 520 }}>
-          <AlertTriangle size={15} /> Vous n'avez pas le droit d'excéder votre zone de campagne.
-        </div>
-      )}
 
-      {!horsZone && results && (
+      {results && (
         results.length === 0 ? (
           <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
         ) : (
@@ -3652,6 +3636,169 @@ function GroupesTab({ accessToken, groupes, agents, membres, selected, setSelect
   );
 }
 
+/* ---------------------------------- recyclage des fiches ---------------------------------- */
+
+const RECYCLAGE_STATUTS = ["archive", "planifie", "en_cours"];
+
+function RecyclagePanel({ accessToken }) {
+  const [campagnes, setCampagnes] = useState(null);
+  const [error, setError] = useState(null);
+  const [selectedCampagneId, setSelectedCampagneId] = useState("");
+  const [lots, setLots] = useState([]);
+  const [selectedLotId, setSelectedLotId] = useState("");
+  const [statutFilters, setStatutFilters] = useState({ archive: true, planifie: true, en_cours: false });
+  const [results, setResults] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [loading, setLoading] = useState(false);
+  const [recycling, setRecycling] = useState(false);
+  const [successMsg, setSuccessMsg] = useState(null);
+
+  useEffect(() => {
+    supaRest("campagnes?select=id,nom&order=nom.asc", { accessToken }).then(setCampagnes).catch((e) => setError(e.message));
+  }, [accessToken]);
+
+  useEffect(() => {
+    setSelectedLotId(""); setResults(null); setSelectedIds(new Set()); setSuccessMsg(null);
+    if (!selectedCampagneId) { setLots([]); return; }
+    supaRest(`lots?select=id,nom&campagne_id=eq.${selectedCampagneId}&order=nom.asc`, { accessToken }).then(setLots).catch((e) => setError(e.message));
+  }, [selectedCampagneId, accessToken]);
+
+  async function chercher() {
+    const statuts = RECYCLAGE_STATUTS.filter((s) => statutFilters[s]);
+    const lotIds = selectedLotId ? [selectedLotId] : lots.map((l) => l.id);
+    setLoading(true); setError(null); setSuccessMsg(null); setSelectedIds(new Set());
+    try {
+      if (statuts.length === 0 || lotIds.length === 0) { setResults([]); return; }
+      const rows = await fetchInChunks(
+        `clients?select=id,nom,numero_box,numero_fiche,statut,updated_at&statut=in.(${statuts.join(",")})&lot_id=in.(`,
+        lotIds, accessToken
+      );
+      rows.sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at));
+      setResults(rows);
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  }
+
+  function toggleOne(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelectedIds((prev) => (prev.size === results.length ? new Set() : new Set(results.map((r) => r.id))));
+  }
+
+  async function recycler() {
+    if (selectedIds.size === 0) return;
+    setRecycling(true); setError(null); setSuccessMsg(null);
+    try {
+      const nb = await rpc("admin_recycler_fiches", accessToken, { p_client_ids: Array.from(selectedIds) });
+      setSuccessMsg(`${nb} fiche${nb !== 1 ? "s" : ""} recyclée${nb !== 1 ? "s" : ""} — de nouveau disponible${nb !== 1 ? "s" : ""} pour vos agents.`);
+      setResults((prev) => prev.filter((r) => !selectedIds.has(r.id)));
+      setSelectedIds(new Set());
+    } catch (e) { setError(e.message); } finally { setRecycling(false); }
+  }
+
+  return (
+    <div>
+      <header className="mb-6">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Recyclage des fiches</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+          Remettez en circulation des fiches archivées ou oubliées d'une campagne : elles repassent disponibles, sans agent assigné, dans leur lot d'origine.
+        </p>
+      </header>
+
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+      {successMsg && (
+        <div className="flex items-center gap-2 mb-4" style={{ background: C.tealSoft, color: C.teal, borderRadius: 9, padding: "10px 14px", fontSize: 13 }}>
+          <CheckCircle2 size={15} /> {successMsg}
+        </div>
+      )}
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 20 }}>
+        <div className="flex items-end gap-3 flex-wrap">
+          <div>
+            <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 5 }}>Campagne</div>
+            <select value={selectedCampagneId} onChange={(e) => setSelectedCampagneId(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, minWidth: 200 }}>
+              <option value="">— Choisir —</option>
+              {(campagnes || []).map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 5 }}>Lot</div>
+            <select value={selectedLotId} onChange={(e) => setSelectedLotId(e.target.value)} disabled={!selectedCampagneId}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, minWidth: 200 }}>
+              <option value="">Tous les lots</option>
+              {lots.map((l) => <option key={l.id} value={l.id}>{l.nom}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-3">
+            {RECYCLAGE_STATUTS.map((s) => (
+              <label key={s} className="flex items-center gap-1.5" style={{ fontSize: 12.5, color: C.text, cursor: "pointer" }}>
+                <input type="checkbox" checked={statutFilters[s]} onChange={(e) => setStatutFilters((prev) => ({ ...prev, [s]: e.target.checked }))} />
+                {STATUS_META[s].label}
+              </label>
+            ))}
+          </div>
+          <button onClick={chercher} disabled={!selectedCampagneId || loading}
+            className="flex items-center gap-2" style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontSize: 13, fontWeight: 600 }}>
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />} Chercher
+          </button>
+        </div>
+      </div>
+
+      {results && (
+        results.length === 0 ? (
+          <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à ces critères.</p>
+        ) : (
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+            <div className="flex items-center justify-between" style={{ padding: "10px 16px", borderBottom: `1px solid ${C.borderSoft}` }}>
+              <label className="flex items-center gap-2" style={{ fontSize: 12.5, cursor: "pointer" }}>
+                <input type="checkbox" checked={selectedIds.size === results.length} onChange={toggleAll} />
+                {selectedIds.size} / {results.length} sélectionnée{results.length !== 1 ? "s" : ""}
+              </label>
+              <button onClick={recycler} disabled={selectedIds.size === 0 || recycling}
+                className="flex items-center gap-2" style={{ background: selectedIds.size === 0 ? C.borderSoft : C.teal, color: selectedIds.size === 0 ? C.muted : "#fff", border: "none", borderRadius: 7, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
+                {recycling ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Recycler {selectedIds.size > 0 && `(${selectedIds.size})`}
+              </button>
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ background: C.canvas, textAlign: "left" }}>
+                  {["", "N° de box", "N° de fiche", "Client", "Statut", "Dernière activité"].map((h) => (
+                    <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((c) => {
+                  const meta = STATUS_META[c.statut];
+                  return (
+                    <tr key={c.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                      <td style={{ padding: "10px 16px" }}>
+                        <input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleOne(c.id)} />
+                      </td>
+                      <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_box || "—"}</td>
+                      <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_fiche}</td>
+                      <td style={{ padding: "10px 16px", fontWeight: 500 }}>{c.nom}</td>
+                      <td style={{ padding: "10px 16px" }}>
+                        <span style={{ background: meta.soft, color: meta.color, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
+                      </td>
+                      <td style={{ padding: "10px 16px", color: C.muted }}>{formatRelatif(c.updated_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
 
 /* ---------------------------------- super admin : équipes ---------------------------------- */
 
