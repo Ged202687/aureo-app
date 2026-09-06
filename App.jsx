@@ -86,6 +86,16 @@ async function fetchPaged(path, accessToken, pageSize = 1000) {
   return all;
 }
 
+// Comme fetchInChunks, mais pagine aussi les lignes renvoyées par chaque lot d'identifiants —
+// nécessaire quand la relation id -> lignes n'est pas bornée (ex: plusieurs fiches par lot).
+async function fetchInChunksPaged(pathPrefix, ids, accessToken, chunkSize = 150) {
+  if (!ids || ids.length === 0) return [];
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
+  const results = await Promise.all(chunks.map((chunk) => fetchPaged(`${pathPrefix}${chunk.join(",")})`, accessToken)));
+  return results.flat();
+}
+
 const rpc = (fn, accessToken, body) => supaRest(`rpc/${fn}`, { method: "POST", accessToken, body });
 
 /* ---------------------------------- tokens visuels ---------------------------------- */
@@ -2347,12 +2357,12 @@ function PresencePanel({ accessToken }) {
       const [profils, temps, pauseTypes, pauseDetails, historique] = await Promise.all([
         fetchInChunks(`profils?select=id,nom,role,matricule&role=in.(agent,superviseur,coach)&id=in.(`, idsVisibles, accessToken),
         vue === "jour"
-          ? supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${jourGteFilter}`, { accessToken })
-          : supaRest(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=gte.${jourGteFilter}&jour=lt.${jourLtFilter}`, { accessToken }),
+          ? fetchPaged(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=eq.${jourGteFilter}&order=agent_id.asc,statut.asc`, accessToken)
+          : fetchPaged(`vue_temps_agent_jour?select=agent_id,statut,secondes&jour=gte.${jourGteFilter}&jour=lt.${jourLtFilter}&order=agent_id.asc,jour.asc,statut.asc`, accessToken),
         supaRest("pause_types?select=*&order=ordre.asc", { accessToken }),
-        supaRest(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${periodStart.toISOString()}&debut=lt.${periodEnd.toISOString()}`, { accessToken }),
+        fetchPaged(`pause_details?select=agent_id,pause_type_id,debut,fin&debut=gte.${periodStart.toISOString()}&debut=lt.${periodEnd.toISOString()}&order=debut.asc,agent_id.asc`, accessToken),
         vue === "jour"
-          ? supaRest(`statuts_historique?select=agent_id,statut,debut&debut=gte.${periodStart.toISOString()}&debut=lt.${periodEnd.toISOString()}&order=debut.asc`, { accessToken })
+          ? fetchPaged(`statuts_historique?select=agent_id,statut,debut&debut=gte.${periodStart.toISOString()}&debut=lt.${periodEnd.toISOString()}&order=debut.asc,agent_id.asc`, accessToken)
           : Promise.resolve([]), // "heure de connexion" n'a pas de sens agrégée sur un mois
       ]);
       setPauseTypesList(pauseTypes);
@@ -3686,7 +3696,7 @@ function RecyclagePanel({ accessToken }) {
     setLoading(true); setError(null); setSuccessMsg(null); setSelectedIds(new Set());
     try {
       if (statuts.length === 0 || lotIds.length === 0) { setResults([]); return; }
-      const rows = await fetchInChunks(
+      const rows = await fetchInChunksPaged(
         `clients?select=id,nom,numero_box,numero_fiche,statut,updated_at&statut=in.(${statuts.join(",")})&lot_id=in.(`,
         lotIds, accessToken
       );
