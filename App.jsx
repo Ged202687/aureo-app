@@ -69,6 +69,23 @@ async function fetchInChunks(pathPrefix, ids, accessToken, chunkSize = 150) {
   return results.flat();
 }
 
+// Récupère la totalité des lignes d'une requête en avançant page par page (limit/offset),
+// car PostgREST plafonne silencieusement le nombre de lignes renvoyées par requête
+// (db-max-rows, généralement 1000) — sans pagination, les exports sur une longue période
+// ou avec beaucoup de fiches traitées se retrouvaient tronqués sans erreur ni avertissement.
+async function fetchPaged(path, accessToken, pageSize = 1000) {
+  const sep = path.includes("?") ? "&" : "?";
+  const all = [];
+  let offset = 0;
+  while (true) {
+    const page = await supaRest(`${path}${sep}limit=${pageSize}&offset=${offset}`, { accessToken });
+    all.push(...page);
+    if (page.length === 0) break;
+    offset += page.length;
+  }
+  return all;
+}
+
 const rpc = (fn, accessToken, body) => supaRest(`rpc/${fn}`, { method: "POST", accessToken, body });
 
 /* ---------------------------------- tokens visuels ---------------------------------- */
@@ -2587,9 +2604,9 @@ function ExportPanel({ accessToken }) {
       if (lotId) lotIdsFiltre = [lotId];
       else if (campagneId) lotIdsFiltre = (lots || []).filter((l) => l.campagne_id === campagneId).map((l) => l.id);
 
-      const qualifs = await supaRest(
-        `qualifications?select=id,client_id,agent_id,commentaire,created_at,types_qualification(categorie,motif,est_contact,est_vente)&created_at=gte.${start.toISOString()}&created_at=lt.${end.toISOString()}&order=created_at.desc`,
-        { accessToken }
+      const qualifs = await fetchPaged(
+        `qualifications?select=id,client_id,agent_id,commentaire,created_at,types_qualification(categorie,motif,est_contact,est_vente)&created_at=gte.${start.toISOString()}&created_at=lt.${end.toISOString()}&order=created_at.desc,id.asc`,
+        accessToken
       );
       if (qualifs.length === 0) { setRows([]); setLoading(false); return; }
 
