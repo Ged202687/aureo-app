@@ -2615,7 +2615,7 @@ function ExportPanel({ accessToken }) {
       else if (campagneId) lotIdsFiltre = (lots || []).filter((l) => l.campagne_id === campagneId).map((l) => l.id);
 
       const qualifs = await fetchPaged(
-        `qualifications?select=id,client_id,agent_id,commentaire,created_at,types_qualification(categorie,motif,est_contact,est_vente)&created_at=gte.${start.toISOString()}&created_at=lt.${end.toISOString()}&order=created_at.desc,id.asc`,
+        `qualifications?select=id,client_id,agent_id,commentaire,created_at,duree_secondes,types_qualification(categorie,motif,est_contact,est_vente)&created_at=gte.${start.toISOString()}&created_at=lt.${end.toISOString()}&order=created_at.desc,id.asc`,
         accessToken
       );
       if (qualifs.length === 0) { setRows([]); setLoading(false); return; }
@@ -2665,6 +2665,8 @@ function ExportPanel({ accessToken }) {
         "Motif": r.types_qualification?.motif || "",
         "Contact": r.types_qualification?.est_contact ? "Oui" : "Non",
         "Vente": r.types_qualification?.est_vente ? "Oui" : "Non",
+        "Temps de traitement": formatDuree(r.duree_secondes),
+        "Temps de traitement (s)": r.duree_secondes ?? "",
         "Commentaire": r.commentaire || "",
       }));
       const ws = XLSX.utils.json_to_sheet(data);
@@ -2749,7 +2751,7 @@ function ExportPanel({ accessToken }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: C.canvas, textAlign: "left" }}>
-                {["Date", "Client", "Agent", "Catégorie", "Motif", "Contact", "Vente"].map((h) => (
+                {["Date", "Client", "Agent", "Catégorie", "Motif", "Contact", "Vente", "Temps de traitement"].map((h) => (
                   <th key={h} style={{ padding: "9px 14px", color: C.muted, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -2764,6 +2766,7 @@ function ExportPanel({ accessToken }) {
                   <td style={{ padding: "8px 14px" }}>{r.types_qualification?.motif}</td>
                   <td style={{ padding: "8px 14px" }}>{r.types_qualification?.est_contact ? "Oui" : "Non"}</td>
                   <td style={{ padding: "8px 14px" }}>{r.types_qualification?.est_vente ? "Oui" : "Non"}</td>
+                  <td className="mono" style={{ padding: "8px 14px", color: C.muted, whiteSpace: "nowrap" }}>{formatDuree(r.duree_secondes)}</td>
                 </tr>
               ))}
             </tbody>
