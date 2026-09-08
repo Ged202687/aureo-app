@@ -1402,26 +1402,34 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
       if (isNumeric) orParts.push(`numero_fiche.eq.${q}`);
       const rows = await supaRest(`clients?select=*,lots(campagne_id)&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
 
-      // Une fiche "planifiée" (rappel programmé, ou verrou de 30 jours après un rechargement
-      // validé) reste en attente jusqu'à sa date d'échéance : elle ne doit remonter par
-      // recherche — ni être récupérable — avant, quel que soit le champ qui a permis de la
-      // retrouver (nom, téléphone, n° MTN, n° de box ou n° de fiche).
+      // Seuls deux cas restent en attente jusqu'à échéance et ne doivent pas remonter par
+      // recherche (ni être récupérables) : un rappel programmé (catégorie "À rappeler"), ou
+      // un rechargement validé (verrouillé 30 jours). Les autres fiches "planifiées"
+      // (Injoignable, Pas disponible, etc. — simple délai de réouverture automatique)
+      // restent trouvables normalement, quel que soit le champ utilisé pour les retrouver.
       const maintenant = Date.now();
-      const enAttente = rows.filter((r) => r.statut === "planifie" && r.visible_apres && new Date(r.visible_apres).getTime() > maintenant);
-      const enAttenteIds = new Set(enAttente.map((r) => r.id));
-      setResults(rows.filter((r) => !enAttenteIds.has(r.id)));
-
-      // Parmi les fiches en attente, on distingue celles verrouillées par un rechargement
-      // validé récent (message dédié avec la date de validation) des autres rappels programmés.
-      const seuil = new Date(maintenant - 30 * 24 * 3600 * 1000).toISOString();
-      const validations = enAttente.length > 0
-        ? await supaRest(
-            `qualifications?select=client_id,created_at,types_qualification!inner(categorie,motif)&types_qualification.categorie=eq.Positif&types_qualification.motif=eq.${encodeURIComponent("Rechargement validé")}&created_at=gte.${seuil}&client_id=in.(${enAttente.map((r) => r.id).join(",")})&order=created_at.desc`,
-            { accessToken }
-          )
-        : [];
-      const validationParClient = new Map(validations.map((v) => [v.client_id, v.created_at]));
-      setVerrouillees(enAttente.map((r) => ({ ...r, validationDate: validationParClient.get(r.id) || null })));
+      const candidats = rows.filter((r) => r.statut === "planifie" && r.visible_apres && new Date(r.visible_apres).getTime() > maintenant);
+      let verrouillees = [];
+      if (candidats.length > 0) {
+        const historique = await supaRest(
+          `qualifications?select=client_id,created_at,types_qualification(categorie,motif)&client_id=in.(${candidats.map((r) => r.id).join(",")})&order=created_at.desc`,
+          { accessToken }
+        );
+        const derniereParClient = new Map();
+        for (const h of historique) if (!derniereParClient.has(h.client_id)) derniereParClient.set(h.client_id, h);
+        verrouillees = candidats
+          .map((r) => {
+            const derniere = derniereParClient.get(r.id);
+            const estRappel = derniere?.types_qualification?.categorie === "À rappeler";
+            const estRechargementValide = derniere?.types_qualification?.categorie === "Positif" && derniere?.types_qualification?.motif === "Rechargement validé";
+            if (!estRappel && !estRechargementValide) return null;
+            return { ...r, validationDate: estRechargementValide ? derniere.created_at : null };
+          })
+          .filter(Boolean);
+      }
+      const verrouilleesIds = new Set(verrouillees.map((r) => r.id));
+      setResults(rows.filter((r) => !verrouilleesIds.has(r.id)));
+      setVerrouillees(verrouillees);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
