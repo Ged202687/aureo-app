@@ -724,7 +724,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <>
               {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
-              {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} isAdmin={isAdmin} />}
+              {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -2118,7 +2118,7 @@ function MultiCalendar({ selected, onToggle }) {
   );
 }
 
-function MesResultatsPanel({ accessToken, isAdmin }) {
+function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
   const [selected, setSelected] = useState([toISODate(new Date())]);
   const [stats, setStats] = useState(null);
   const [parAgent, setParAgent] = useState(null);
@@ -2137,12 +2137,12 @@ function MesResultatsPanel({ accessToken, isAdmin }) {
     try {
       const [row] = await rpc("mes_resultats", accessToken, { p_dates: selected });
       setStats(row || { appels_traites: 0, rechargements_valides: 0, rechargements_valides_mois: 0 });
-      if (isAdmin) {
+      if (montrerDetailParAgent) {
         const rows = await rpc("resultats_par_agent", accessToken, { p_dates: selected });
         setParAgent(rows || []);
       }
     } catch (e) { setError(e.message); }
-  }, [accessToken, selected, isAdmin]);
+  }, [accessToken, selected, montrerDetailParAgent]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2217,7 +2217,7 @@ function MesResultatsPanel({ accessToken, isAdmin }) {
             <div className="disp mono" style={{ fontSize: 30, fontWeight: 700, color: C.ink }}>{stats ? stats.rechargements_valides_mois : "…"}</div>
           </div>
 
-          {isAdmin && (
+          {montrerDetailParAgent && (
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
               <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.borderSoft}` }}>
                 <h2 className="disp" style={{ fontSize: 14, fontWeight: 700 }}>Détail par agent</h2>
