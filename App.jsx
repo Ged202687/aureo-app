@@ -1385,6 +1385,7 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
 function AgentSearch({ accessToken, agentId, onAfficher }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
+  const [verrouillees, setVerrouillees] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [openingId, setOpeningId] = useState(null);
@@ -1392,7 +1393,7 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
   async function runSearch(e) {
     e.preventDefault();
     const q = query.trim();
-    if (!q) { setResults(null); return; }
+    if (!q) { setResults(null); setVerrouillees([]); return; }
     setLoading(true); setError(null);
     try {
       const escaped = q.replace(/[%,]/g, "");
@@ -1401,7 +1402,22 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
       if (isNumeric) orParts.push(`numero_fiche.eq.${q}`);
       const rows = await supaRest(`clients?select=*,lots(campagne_id)&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
 
-      setResults(rows);
+      // Une fiche validée (rechargement) est verrouillée 30 jours : aucun agent ne doit
+      // pouvoir la retrouver par recherche pour la re-qualifier pendant ce délai.
+      const candidateIds = rows.map((r) => r.id);
+      const seuil = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+      const verrous = candidateIds.length > 0
+        ? await supaRest(
+            `qualifications?select=client_id,created_at,types_qualification!inner(categorie,motif)&types_qualification.categorie=eq.Positif&types_qualification.motif=eq.${encodeURIComponent("Rechargement validé")}&created_at=gte.${seuil}&client_id=in.(${candidateIds.join(",")})&order=created_at.desc`,
+            { accessToken }
+          )
+        : [];
+      const idsVerrouilles = new Set(verrous.map((v) => v.client_id));
+      setResults(rows.filter((r) => !idsVerrouilles.has(r.id)));
+      setVerrouillees(rows
+        .filter((r) => idsVerrouilles.has(r.id))
+        .map((r) => ({ ...r, validationDate: verrous.find((v) => v.client_id === r.id)?.created_at }))
+      );
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
@@ -1432,7 +1448,18 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
 
       {results && (
         results.length === 0 ? (
-          <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
+          verrouillees.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              {verrouillees.map((c) => (
+                <div key={c.id} className="flex items-center gap-2" style={{ background: C.amberSoft, color: "#8a5c14", borderRadius: 9, padding: "12px 16px", fontSize: 13 }}>
+                  <AlertTriangle size={15} />
+                  Cette box ({c.numero_box || c.nom}) a déjà été validée le {c.validationDate ? new Date(c.validationDate).toLocaleDateString("fr-FR") : "—"} — verrouillée 30 jours.
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
+          )
         ) : (
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -1518,20 +1545,22 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
   async function handleCreate() {
     setError(null);
     if (!form.nom.trim()) { setError("Le nom du client est obligatoire."); return; }
-    if (!form.telephone.trim()) { setError("Le numéro de contact 1 est obligatoire pour vérifier les doublons."); return; }
+    if (!form.telephone.trim()) { setError("Le numéro de contact 1 est obligatoire."); return; }
     if (!selectedLotId) { setError("Aucun lot rattaché à votre compte — la fiche ne pourrait jamais être redistribuée. Contactez un administrateur."); return; }
     setBusy(true);
     try {
-      // Vérifie si ce client existe déjà et appartient déjà à une campagne (via un lot)
-      const orParts = [`telephone.eq.${form.telephone.trim()}`];
-      if (form.numero_box.trim()) orParts.push(`numero_box.eq.${form.numero_box.trim()}`);
-      const existing = await supaRest(`clients?select=id,nom,lot_id,lots(nom,campagne_id,campagnes(nom))&or=(${orParts.join(",")})`, { accessToken });
-      const dejaEnCampagne = existing.find((c) => c.lot_id);
-      if (dejaEnCampagne) {
-        const nomCampagne = dejaEnCampagne.lots?.campagnes?.nom;
-        setError(`Ce client existe déjà dans une campagne${nomCampagne ? ` (« ${nomCampagne} »)` : ""}. Utilisez la recherche pour retrouver sa fiche plutôt que d'en créer une nouvelle.`);
-        setBusy(false);
-        return;
+      // Un même client (nom + téléphone) peut posséder plusieurs box : on ne bloque
+      // que si CE numéro de box précis existe déjà dans une campagne (doublon exact
+      // de fiche), pas simplement parce que le nom/téléphone est déjà connu.
+      if (form.numero_box.trim()) {
+        const existing = await supaRest(`clients?select=id,nom,lot_id,lots(nom,campagne_id,campagnes(nom))&numero_box=eq.${form.numero_box.trim()}`, { accessToken });
+        const dejaEnCampagne = existing.find((c) => c.lot_id);
+        if (dejaEnCampagne) {
+          const nomCampagne = dejaEnCampagne.lots?.campagnes?.nom;
+          setError(`Ce numéro de box existe déjà dans une campagne${nomCampagne ? ` (« ${nomCampagne} »)` : ""}. Utilisez la recherche pour retrouver sa fiche plutôt que d'en créer une nouvelle.`);
+          setBusy(false);
+          return;
+        }
       }
       const [created] = await supaRest("clients", {
         method: "POST", accessToken,
@@ -1563,7 +1592,7 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
         <button onClick={onClose} style={{ background: "none", border: "none", color: C.mutedSoft, padding: 4 }}><X size={16} /></button>
       </div>
       <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 14 }}>
-        Réservé aux clients qui n'existent dans aucune campagne. Si le numéro correspond à une fiche déjà en campagne, la création sera bloquée.
+        Un même client peut avoir plusieurs box. La création n'est bloquée que si ce numéro de box précis existe déjà dans une campagne.
       </p>
 
       <div style={{ background: C.canvas, borderRadius: 8, padding: 10, marginBottom: 14 }}>
@@ -2933,22 +2962,18 @@ function ImportPanel({ accessToken, bump }) {
     if (payload.length === 0) { setError("Aucune ligne exploitable trouvée dans ce fichier."); return; }
     setBusy(true);
     try {
-      // Détection des doublons : un client déjà présent en base (n'importe
-      // quelle campagne) ne doit jamais être réimporté une seconde fois —
-      // même principe que la création manuelle depuis le poste de travail.
-      const telephones = [...new Set(payload.map((p) => p.telephone).filter(Boolean))];
+      // Détection des doublons : un même client (nom + téléphone) peut posséder
+      // plusieurs box, donc seul un numéro de box déjà présent en base (n'importe
+      // quelle campagne) bloque la réimportation d'une ligne — même principe que
+      // la création manuelle depuis le poste de travail.
       const boxes = [...new Set(payload.map((p) => p.numero_box).filter(Boolean))];
-      const [parTelephone, parBox] = await Promise.all([
-        fetchInChunks("clients?select=telephone&telephone=in.(", telephones, accessToken),
-        fetchInChunks("clients?select=numero_box&numero_box=in.(", boxes, accessToken),
-      ]);
-      const telephonesExistants = new Set(parTelephone.map((c) => c.telephone));
+      const parBox = await fetchInChunks("clients?select=numero_box&numero_box=in.(", boxes, accessToken);
       const boxesExistants = new Set(parBox.map((c) => c.numero_box));
 
       const aInserer = [];
       let doublons = 0;
       for (const p of payload) {
-        const dejaLa = (p.telephone && telephonesExistants.has(p.telephone)) || (p.numero_box && boxesExistants.has(p.numero_box));
+        const dejaLa = p.numero_box && boxesExistants.has(p.numero_box);
         if (dejaLa) doublons++;
         else aInserer.push(p);
       }
@@ -3699,8 +3724,15 @@ function RecyclagePanel({ accessToken }) {
     setLoading(true); setError(null); setSuccessMsg(null); setSelectedIds(new Set());
     try {
       if (statuts.length === 0 || lotIds.length === 0) { setResults([]); return; }
+      // Une fiche "planifiée" dont le visible_apres est encore dans le futur est
+      // programmée délibérément (rappel à venir, ou verrou de 30 jours après un
+      // rechargement validé) — ce n'est pas une fiche oubliée, on ne la recycle pas.
+      const maintenant = new Date().toISOString();
+      const statutConditions = statuts.map((s) =>
+        s === "planifie" ? `and(statut.eq.planifie,visible_apres.lte.${maintenant})` : `statut.eq.${s}`
+      );
       const rows = await fetchInChunksPaged(
-        `clients?select=id,nom,numero_box,numero_fiche,statut,updated_at&statut=in.(${statuts.join(",")})&lot_id=in.(`,
+        `clients?select=id,nom,numero_box,numero_fiche,statut,updated_at&or=(${statutConditions.join(",")})&lot_id=in.(`,
         lotIds, accessToken
       );
       rows.sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at));
