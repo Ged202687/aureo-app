@@ -815,6 +815,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const [lastOutcome, setLastOutcome] = useState(null);
   const [error, setError] = useState(null);
   const [lastQualif, setLastQualif] = useState(null);
+  const [campagneInfo, setCampagneInfo] = useState(null); // { nom, script }
   const [stats, setStats] = useState({ fiches: 0, rappels: 0, ventes: 0 });
   const [myPresence, setMyPresence] = useState(null);
   const [, forceTick] = useState(0);
@@ -890,10 +891,18 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
   const [showCreateClient, setShowCreateClient] = useState(false);
 
+  async function loadCampagneInfo(lotId) {
+    if (!lotId) { setCampagneInfo(null); return; }
+    try {
+      const [row] = await supaRest(`lots?select=nom,campagnes(nom,script_prise_en_charge)&id=eq.${lotId}`, { accessToken });
+      setCampagneInfo(row?.campagnes ? { nom: row.campagnes.nom, script: row.campagnes.script_prise_en_charge } : null);
+    } catch { setCampagneInfo(null); }
+  }
+
   async function openFicheDirect(f) {
     setFiche(f);
     ficheStartRef.current = f ? Date.now() : null;
-    setCat(null); setSub(null); setNote(""); setLastOutcome(null); setLastQualif(null);
+    setCat(null); setSub(null); setNote(""); setLastOutcome(null); setLastQualif(null); setCampagneInfo(null);
     setView("poste");
     if (f) {
       try {
@@ -903,12 +912,13 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
         );
         setLastQualif(hist[0] || null);
       } catch {}
+      loadCampagneInfo(f.lot_id);
     }
     loadOrphelines();
   }
 
   async function pullNext() {
-    setPulling(true); setError(null); setLastOutcome(null); setLastQualif(null);
+    setPulling(true); setError(null); setLastOutcome(null); setLastQualif(null); setCampagneInfo(null);
     try {
       const result = await rpc("get_next_fiche", accessToken, {});
       const f = result && result.id ? result : null;
@@ -923,6 +933,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
           );
           setLastQualif(hist[0] || null);
         } catch {}
+        loadCampagneInfo(f.lot_id);
       }
     } catch (e) { setError(e.message); } finally { setPulling(false); }
   }
@@ -1103,14 +1114,30 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       {!fiche ? (
         <EmptyOrOutcome outcome={lastOutcome} onPull={pullNext} pulling={pulling} onCreateClient={() => setShowCreateClient(true)} />
       ) : (
+        <>
+        {campagneInfo?.script && (
+          <div style={{ background: C.tealSoft, border: `1px solid ${C.teal}`, borderRadius: 14, padding: 18, marginBottom: 20 }}>
+            <div className="flex items-center gap-1.5" style={{ fontSize: 11.5, fontWeight: 700, color: C.teal, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 8 }}>
+              <ListChecks size={13} /> Script de prise en charge — {campagneInfo.nom}
+            </div>
+            <p style={{ fontSize: 13, color: C.text, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{campagneInfo.script}</p>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 24 }}>
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden" }}>
-            <div style={{ background: C.ink, color: "#fff", padding: "14px 18px" }} className="flex items-center justify-between">
-              <span className="mono flex items-center gap-3" style={{ fontSize: 11, letterSpacing: "0.04em", color: "#A6ADBA" }}>
-                <span className="flex items-center gap-1"><Hash size={11} />{fiche.numero_fiche}</span>
-                {fiche.numero_box && <span style={{ color: "#fff", fontSize: 13, fontWeight: 600 }}>Box {fiche.numero_box}</span>}
-              </span>
-              <span style={{ fontSize: 10.5, background: C.amber, color: C.ink, padding: "2px 8px", borderRadius: 999, fontWeight: 600 }}>EN COURS</span>
+            <div style={{ background: C.ink, color: "#fff", padding: "14px 18px" }}>
+              <div className="flex items-center justify-between">
+                <span className="mono flex items-center gap-3" style={{ fontSize: 11, letterSpacing: "0.04em", color: "#A6ADBA" }}>
+                  <span className="flex items-center gap-1"><Hash size={11} />{fiche.numero_fiche}</span>
+                  {fiche.numero_box && <span style={{ color: "#fff", fontSize: 13, fontWeight: 600 }}>Box {fiche.numero_box}</span>}
+                </span>
+                <span style={{ fontSize: 10.5, background: C.amber, color: C.ink, padding: "2px 8px", borderRadius: 999, fontWeight: 600 }}>EN COURS</span>
+              </div>
+              {campagneInfo?.nom && (
+                <div style={{ marginTop: 8 }}>
+                  <span style={{ fontSize: 11, background: "rgba(255,255,255,0.12)", color: "#fff", padding: "3px 9px", borderRadius: 999, fontWeight: 600 }}>{campagneInfo.nom}</span>
+                </div>
+              )}
             </div>
             <div className="mono flex items-center gap-1.5" style={{ padding: "7px 18px", background: C.canvas, borderBottom: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.muted }}>
               <Clock size={11} /> {ficheElapsedStr} sur cette fiche
@@ -1253,6 +1280,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
             })()}
           </div>
         </div>
+        </>
       )}
       </div>
       <AgentSidebar accessToken={accessToken} agentId={agentId} refreshTrigger={sidebarBump} />
@@ -3335,6 +3363,10 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
   const [editNomValue, setEditNomValue] = useState("");
   const [savingNom, setSavingNom] = useState(false);
 
+  const [editingScript, setEditingScript] = useState(false);
+  const [editScriptValue, setEditScriptValue] = useState("");
+  const [savingScript, setSavingScript] = useState(false);
+
   const [fichesParLot, setFichesParLot] = useState({});
 
   const [showAttach, setShowAttach] = useState(false);
@@ -3409,6 +3441,15 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
       setEditingNom(false);
       reload();
     } catch (e) { setError(e.message); } finally { setSavingNom(false); }
+  }
+
+  async function saveScript(campagneId) {
+    setSavingScript(true); setError(null);
+    try {
+      await supaRest(`campagnes?id=eq.${campagneId}`, { method: "PATCH", accessToken, body: { script_prise_en_charge: editScriptValue.trim() || null } });
+      setEditingScript(false);
+      reload();
+    } catch (e) { setError(e.message); } finally { setSavingScript(false); }
   }
 
   async function attachLot(campagneId) {
@@ -3520,6 +3561,41 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
             <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 4 }}>
               Renommer une campagne n'a aucun effet sur la distribution : chaque lot reste rattaché par identifiant, pas par nom.
             </p>
+
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
+              <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+                <div className="flex items-center gap-1.5" style={{ fontSize: 11.5, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  <ListChecks size={13} /> Script de prise en charge
+                </div>
+                {!editingScript && (
+                  <button onClick={() => { setEditingScript(true); setEditScriptValue(current.script_prise_en_charge || ""); }}
+                    style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 9px", fontSize: 11, fontWeight: 600, color: C.text }}>
+                    {current.script_prise_en_charge ? "Modifier" : "Ajouter"}
+                  </button>
+                )}
+              </div>
+              {editingScript ? (
+                <div>
+                  <textarea value={editScriptValue} onChange={(e) => setEditScriptValue(e.target.value)} autoFocus rows={5}
+                    placeholder="Ex: Bonjour, je vous appelle au sujet de votre box FTTH…"
+                    style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, resize: "vertical", outline: "none" }} />
+                  <div className="flex items-center gap-2 mt-2">
+                    <button onClick={() => saveScript(current.id)} disabled={savingScript}
+                      style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                      {savingScript && <Loader2 size={11} className="animate-spin" />} Enregistrer
+                    </button>
+                    <button onClick={() => setEditingScript(false)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", fontSize: 12, color: C.muted }}>
+                      Annuler
+                    </button>
+                  </div>
+                </div>
+              ) : current.script_prise_en_charge ? (
+                <p style={{ fontSize: 12.5, color: C.text, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{current.script_prise_en_charge}</p>
+              ) : (
+                <p style={{ fontSize: 12, color: C.mutedSoft }}>Aucun script — les agents ne verront rien de spécifique pour cette campagne.</p>
+              )}
+            </div>
+
             {error && <div className="mt-3"><ErrorBlock message={error} /></div>}
             {deleteInfo && (
               <div className="flex items-center gap-2 mt-3" style={{ background: C.greenSoft, color: C.green, borderRadius: 8, padding: "8px 12px", fontSize: 12 }}>
