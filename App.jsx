@@ -171,6 +171,27 @@ function rowsToClients(rows, lotId) {
       lot_id: lotId || null,
     }));
 }
+// Forme canonique d'un numéro (box ou téléphone) pour la déduplication : chiffres
+// seuls, zéro initial ignoré — un même numéro importé une fois avec et une fois
+// sans son 0 initial (lecture Excel en nombre plutôt qu'en texte, par exemple) ne
+// doit pas être vu comme deux fiches distinctes.
+function normaliserNumero(s) {
+  if (!s) return "";
+  return String(s).replace(/\D/g, "").replace(/^0+/, "");
+}
+// Les variantes plausibles d'un numéro (brut, chiffres seuls, avec/sans le 0 initial)
+// pour élargir la recherche des doublons existants en base avant de comparer sous
+// forme normalisée.
+function variantesNumero(s) {
+  if (!s) return [];
+  const brut = String(s).trim();
+  const chiffres = brut.replace(/\D/g, "");
+  if (!chiffres) return [];
+  const variantes = new Set([brut, chiffres]);
+  if (chiffres.startsWith("0")) variantes.add(chiffres.replace(/^0+/, ""));
+  else variantes.add("0" + chiffres);
+  return [...variantes];
+}
 function fmtCountdown(ms) {
   if (ms <= 0) return "imminent";
   const s = Math.ceil(ms / 1000);
@@ -1568,8 +1589,11 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
       // que si CE numéro de box précis existe déjà dans une campagne (doublon exact
       // de fiche), pas simplement parce que le nom/téléphone est déjà connu.
       if (form.numero_box.trim()) {
-        const existing = await supaRest(`clients?select=id,nom,lot_id,lots(nom,campagne_id,campagnes(nom))&numero_box=eq.${form.numero_box.trim()}`, { accessToken });
-        const dejaEnCampagne = existing.find((c) => c.lot_id);
+        const variantes = variantesNumero(form.numero_box);
+        const existing = variantes.length > 0
+          ? await supaRest(`clients?select=id,nom,numero_box,lot_id,lots(nom,campagne_id,campagnes(nom))&numero_box=in.(${variantes.join(",")})`, { accessToken })
+          : [];
+        const dejaEnCampagne = existing.find((c) => c.lot_id && normaliserNumero(c.numero_box) === normaliserNumero(form.numero_box));
         if (dejaEnCampagne) {
           const nomCampagne = dejaEnCampagne.lots?.campagnes?.nom;
           setError(`Ce numéro de box existe déjà dans une campagne${nomCampagne ? ` (« ${nomCampagne} »)` : ""}. Utilisez la recherche pour retrouver sa fiche plutôt que d'en créer une nouvelle.`);
@@ -3023,15 +3047,18 @@ function ImportPanel({ accessToken, bump }) {
       // Détection des doublons : un même client (nom + téléphone) peut posséder
       // plusieurs box, donc seul un numéro de box déjà présent en base (n'importe
       // quelle campagne) bloque la réimportation d'une ligne — même principe que
-      // la création manuelle depuis le poste de travail.
-      const boxes = [...new Set(payload.map((p) => p.numero_box).filter(Boolean))];
-      const parBox = await fetchInChunks("clients?select=numero_box&numero_box=in.(", boxes, accessToken);
-      const boxesExistants = new Set(parBox.map((c) => c.numero_box));
+      // la création manuelle depuis le poste de travail. La comparaison se fait sur
+      // une forme normalisée (chiffres seuls, zéro initial ignoré) pour rattraper
+      // les cas où le même numéro a été importé une fois avec et une fois sans son
+      // zéro initial (ex: fichiers Excel où la colonne a été lue comme un nombre).
+      const boxVariantes = [...new Set(payload.flatMap((p) => variantesNumero(p.numero_box)))];
+      const parBox = boxVariantes.length > 0 ? await fetchInChunks("clients?select=numero_box&numero_box=in.(", boxVariantes, accessToken) : [];
+      const boxesExistants = new Set(parBox.map((c) => normaliserNumero(c.numero_box)));
 
       const aInserer = [];
       let doublons = 0;
       for (const p of payload) {
-        const dejaLa = p.numero_box && boxesExistants.has(p.numero_box);
+        const dejaLa = p.numero_box && boxesExistants.has(normaliserNumero(p.numero_box));
         if (dejaLa) doublons++;
         else aInserer.push(p);
       }
