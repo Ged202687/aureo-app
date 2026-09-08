@@ -1398,26 +1398,30 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
     try {
       const escaped = q.replace(/[%,]/g, "");
       const isNumeric = /^\d+$/.test(q);
-      const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`, `numero_box.ilike.*${escaped}*`];
+      const orParts = [`nom.ilike.*${escaped}*`, `telephone.ilike.*${escaped}*`, `numero_mtn.ilike.*${escaped}*`, `numero_box.ilike.*${escaped}*`];
       if (isNumeric) orParts.push(`numero_fiche.eq.${q}`);
       const rows = await supaRest(`clients?select=*,lots(campagne_id)&or=(${orParts.join(",")})&order=created_at.desc&limit=30`, { accessToken });
 
-      // Une fiche validée (rechargement) est verrouillée 30 jours : aucun agent ne doit
-      // pouvoir la retrouver par recherche pour la re-qualifier pendant ce délai.
-      const candidateIds = rows.map((r) => r.id);
-      const seuil = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-      const verrous = candidateIds.length > 0
+      // Une fiche "planifiée" (rappel programmé, ou verrou de 30 jours après un rechargement
+      // validé) reste en attente jusqu'à sa date d'échéance : elle ne doit remonter par
+      // recherche — ni être récupérable — avant, quel que soit le champ qui a permis de la
+      // retrouver (nom, téléphone, n° MTN, n° de box ou n° de fiche).
+      const maintenant = Date.now();
+      const enAttente = rows.filter((r) => r.statut === "planifie" && r.visible_apres && new Date(r.visible_apres).getTime() > maintenant);
+      const enAttenteIds = new Set(enAttente.map((r) => r.id));
+      setResults(rows.filter((r) => !enAttenteIds.has(r.id)));
+
+      // Parmi les fiches en attente, on distingue celles verrouillées par un rechargement
+      // validé récent (message dédié avec la date de validation) des autres rappels programmés.
+      const seuil = new Date(maintenant - 30 * 24 * 3600 * 1000).toISOString();
+      const validations = enAttente.length > 0
         ? await supaRest(
-            `qualifications?select=client_id,created_at,types_qualification!inner(categorie,motif)&types_qualification.categorie=eq.Positif&types_qualification.motif=eq.${encodeURIComponent("Rechargement validé")}&created_at=gte.${seuil}&client_id=in.(${candidateIds.join(",")})&order=created_at.desc`,
+            `qualifications?select=client_id,created_at,types_qualification!inner(categorie,motif)&types_qualification.categorie=eq.Positif&types_qualification.motif=eq.${encodeURIComponent("Rechargement validé")}&created_at=gte.${seuil}&client_id=in.(${enAttente.map((r) => r.id).join(",")})&order=created_at.desc`,
             { accessToken }
           )
         : [];
-      const idsVerrouilles = new Set(verrous.map((v) => v.client_id));
-      setResults(rows.filter((r) => !idsVerrouilles.has(r.id)));
-      setVerrouillees(rows
-        .filter((r) => idsVerrouilles.has(r.id))
-        .map((r) => ({ ...r, validationDate: verrous.find((v) => v.client_id === r.id)?.created_at }))
-      );
+      const validationParClient = new Map(validations.map((v) => [v.client_id, v.created_at]));
+      setVerrouillees(enAttente.map((r) => ({ ...r, validationDate: validationParClient.get(r.id) || null })));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
@@ -1447,20 +1451,22 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
       {error && <ErrorBlock message={error} />}
 
       {results && (
-        results.length === 0 ? (
-          verrouillees.length > 0 ? (
-            <div className="flex flex-col gap-2">
+        <>
+          {verrouillees.length > 0 && (
+            <div className="flex flex-col gap-2 mb-4">
               {verrouillees.map((c) => (
                 <div key={c.id} className="flex items-center gap-2" style={{ background: C.amberSoft, color: "#8a5c14", borderRadius: 9, padding: "12px 16px", fontSize: 13 }}>
                   <AlertTriangle size={15} />
-                  Cette box ({c.numero_box || c.nom}) a déjà été validée le {c.validationDate ? new Date(c.validationDate).toLocaleDateString("fr-FR") : "—"} — verrouillée 30 jours.
+                  {c.validationDate
+                    ? `Cette box (${c.numero_box || c.nom}) a déjà été validée le ${new Date(c.validationDate).toLocaleDateString("fr-FR")} — verrouillée 30 jours.`
+                    : `Cette fiche (${c.numero_box || c.nom}) est programmée pour un rappel — disponible à partir du ${new Date(c.visible_apres).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}.`}
                 </div>
               ))}
             </div>
+          )}
+          {results.length === 0 ? (
+            verrouillees.length === 0 && <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
           ) : (
-            <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
-          )
-        ) : (
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
@@ -1494,7 +1500,8 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
               </tbody>
             </table>
           </div>
-        )
+          )}
+        </>
       )}
     </div>
   );
