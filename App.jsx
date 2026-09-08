@@ -724,7 +724,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <>
               {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
-              {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} />}
+              {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} isAdmin={isAdmin} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -2118,9 +2118,10 @@ function MultiCalendar({ selected, onToggle }) {
   );
 }
 
-function MesResultatsPanel({ accessToken }) {
+function MesResultatsPanel({ accessToken, isAdmin }) {
   const [selected, setSelected] = useState([toISODate(new Date())]);
   const [stats, setStats] = useState(null);
+  const [parAgent, setParAgent] = useState(null);
   const [error, setError] = useState(null);
 
   function toggleDate(iso) {
@@ -2128,12 +2129,20 @@ function MesResultatsPanel({ accessToken }) {
   }
 
   const load = useCallback(async () => {
-    if (selected.length === 0) { setStats({ appels_traites: 0, rechargements_valides: 0, rechargements_valides_mois: 0 }); return; }
+    if (selected.length === 0) {
+      setStats({ appels_traites: 0, rechargements_valides: 0, rechargements_valides_mois: 0 });
+      setParAgent([]);
+      return;
+    }
     try {
       const [row] = await rpc("mes_resultats", accessToken, { p_dates: selected });
       setStats(row || { appels_traites: 0, rechargements_valides: 0, rechargements_valides_mois: 0 });
+      if (isAdmin) {
+        const rows = await rpc("resultats_par_agent", accessToken, { p_dates: selected });
+        setParAgent(rows || []);
+      }
     } catch (e) { setError(e.message); }
-  }, [accessToken, selected]);
+  }, [accessToken, selected, isAdmin]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2207,6 +2216,40 @@ function MesResultatsPanel({ accessToken }) {
             </div>
             <div className="disp mono" style={{ fontSize: 30, fontWeight: 700, color: C.ink }}>{stats ? stats.rechargements_valides_mois : "…"}</div>
           </div>
+
+          {isAdmin && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.borderSoft}` }}>
+                <h2 className="disp" style={{ fontSize: 14, fontWeight: 700 }}>Détail par agent</h2>
+                <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 2 }}>Sur les mêmes dates sélectionnées ci-contre.</p>
+              </div>
+              {parAgent === null ? (
+                <div style={{ padding: 20 }}><CenterLoader /></div>
+              ) : parAgent.length === 0 ? (
+                <p style={{ fontSize: 12.5, color: C.muted, padding: "16px 20px" }}>Aucun agent dans votre périmètre.</p>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead>
+                    <tr style={{ background: C.canvas, textAlign: "left" }}>
+                      {["Agent", "Fiches traitées", "Fiches contactées", "Rechargements validés"].map((h) => (
+                        <th key={h} style={{ padding: "9px 20px", color: C.muted, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parAgent.map((a) => (
+                      <tr key={a.agent_id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                        <td style={{ padding: "8px 20px", fontWeight: 500 }}>{a.nom}</td>
+                        <td className="mono" style={{ padding: "8px 20px" }}>{a.fiches_traitees}</td>
+                        <td className="mono" style={{ padding: "8px 20px" }}>{a.fiches_contactees}</td>
+                        <td className="mono" style={{ padding: "8px 20px", color: C.amber, fontWeight: 600 }}>{a.rechargements_valides}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
