@@ -1753,6 +1753,17 @@ function EmptyOrOutcome({ outcome, onPull, pulling, onCreateClient }) {
 
 /* ---------------------------------- recherche (agent + admin) ---------------------------------- */
 
+const CLIENT_EDIT_FIELDS = [
+  { key: "nom", label: "Nom" },
+  { key: "telephone", label: "Numéro de contact 1" },
+  { key: "numero_mtn", label: "Numéro MTN" },
+  { key: "numero_box", label: "Numéro de box" },
+  { key: "segment", label: "Type de segment" },
+  { key: "commune", label: "Commune" },
+  { key: "email", label: "Email" },
+  { key: "note", label: "Note" },
+];
+
 function SearchPanel({ accessToken, tree, isAdmin }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
@@ -1762,10 +1773,57 @@ function SearchPanel({ accessToken, tree, isAdmin }) {
   const [derniereQualif, setDerniereQualif] = useState(null);
   const [annulationEnCours, setAnnulationEnCours] = useState(false);
   const [confirmAnnulation, setConfirmAnnulation] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState(null);
+
+  function startEdit(c) {
+    setEditingId(c.id);
+    setEditError(null);
+    setEditForm(Object.fromEntries(CLIENT_EDIT_FIELDS.map((f) => [f.key, c[f.key] || ""])));
+  }
+
+  async function saveEdit(clientId) {
+    if (!editForm.nom.trim()) { setEditError("Le nom du client est obligatoire."); return; }
+    setSavingEdit(true); setEditError(null);
+    try {
+      const newBox = editForm.numero_box.trim();
+      if (newBox) {
+        // Une fiche peut avoir plusieurs box, mais on évite qu'une correction en
+        // introduise un doublon exact avec une autre fiche déjà active.
+        const variantes = variantesNumero(newBox);
+        const existing = variantes.length > 0
+          ? await supaRest(`clients?select=id,numero_box,lot_id,lots(campagnes(nom))&numero_box=in.(${variantes.join(",")})`, { accessToken })
+          : [];
+        const conflit = existing.find((c) => c.id !== clientId && c.lot_id && normaliserNumero(c.numero_box) === normaliserNumero(newBox));
+        if (conflit) {
+          setEditError(`Ce numéro de box existe déjà sur une autre fiche active${conflit.lots?.campagnes?.nom ? ` (« ${conflit.lots.campagnes.nom} »)` : ""}.`);
+          setSavingEdit(false);
+          return;
+        }
+      }
+      const [updated] = await supaRest(`clients?id=eq.${clientId}`, {
+        method: "PATCH", accessToken,
+        body: {
+          nom: editForm.nom.trim(),
+          telephone: editForm.telephone.trim() || null,
+          numero_mtn: editForm.numero_mtn.trim() || null,
+          numero_box: newBox || null,
+          segment: editForm.segment.trim() || null,
+          commune: editForm.commune.trim() || null,
+          email: editForm.email.trim() || null,
+          note: editForm.note.trim() || null,
+        },
+      });
+      setResults((prev) => prev.map((r) => (r.id === clientId ? { ...r, ...updated } : r)));
+      setEditingId(null);
+    } catch (e) { setEditError(e.message); } finally { setSavingEdit(false); }
+  }
 
   async function toggleExpand(client) {
     if (expandedId === client.id) { setExpandedId(null); return; }
-    setExpandedId(client.id); setDerniereQualif(undefined); setConfirmAnnulation(false);
+    setExpandedId(client.id); setDerniereQualif(undefined); setConfirmAnnulation(false); setEditingId(null);
     try {
       const rows = await supaRest(
         `qualifications?select=id,created_at,commentaire,agent_id,types_qualification(categorie,motif),profils(nom)&client_id=eq.${client.id}&order=created_at.desc&limit=1`,
@@ -1854,6 +1912,39 @@ function SearchPanel({ accessToken, tree, isAdmin }) {
                     {isExpanded && (
                       <tr>
                         <td colSpan={5} style={{ padding: "14px 16px", background: C.canvas, borderTop: `1px solid ${C.borderSoft}` }}>
+                          {isAdmin && (
+                            <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px dashed ${C.border}` }}>
+                              {editingId === c.id ? (
+                                <div>
+                                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                                    {CLIENT_EDIT_FIELDS.map((f) => (
+                                      <label key={f.key} style={{ fontSize: 10.5, color: C.mutedSoft }}>
+                                        {f.label}
+                                        <input value={editForm[f.key]} onChange={(e) => setEditForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                                          style={{ display: "block", width: "100%", marginTop: 3, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 8px", fontSize: 12.5, color: C.text }} />
+                                      </label>
+                                    ))}
+                                  </div>
+                                  {editError && <p style={{ fontSize: 11.5, color: C.red, marginTop: 8 }}>{editError}</p>}
+                                  <div className="flex items-center gap-2 mt-3">
+                                    <button onClick={() => saveEdit(c.id)} disabled={savingEdit}
+                                      className="flex items-center gap-1.5" style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "7px 12px", fontSize: 12, fontWeight: 600 }}>
+                                      {savingEdit && <Loader2 size={11} className="animate-spin" />} Enregistrer
+                                    </button>
+                                    <button onClick={() => setEditingId(null)}
+                                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 12px", fontSize: 12, color: C.muted }}>
+                                      Annuler
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <button onClick={() => startEdit(c)}
+                                  className="flex items-center gap-1.5" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 12px", fontSize: 12, fontWeight: 600, color: C.text }}>
+                                  <ListChecks size={12} /> Modifier la fiche
+                                </button>
+                              )}
+                            </div>
+                          )}
                           {derniereQualif === undefined ? (
                             <CenterLoader />
                           ) : derniereQualif === null ? (
