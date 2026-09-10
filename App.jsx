@@ -2409,15 +2409,27 @@ function AnalyticsPanel({ accessToken }) {
   const [evolFin, setEvolFin] = useState(toISODate(new Date()));
   const [evolution, setEvolution] = useState(null);
   const [evolError, setEvolError] = useState(null);
+  const [campagnes, setCampagnes] = useState([]);
+  const [equipes, setEquipes] = useState([]);
+  const [campagneId, setCampagneId] = useState("");
+  const [equipeId, setEquipeId] = useState("");
+
+  useEffect(() => {
+    supaRest("campagnes?select=id,nom&order=nom.asc", { accessToken }).then(setCampagnes).catch(() => {});
+    rpc("perimetre_equipes", accessToken, {}).then((rows) => setEquipes(rows || [])).catch(() => {});
+  }, [accessToken]);
 
   const loadEvolution = useCallback(async () => {
     if (!evolDebut || !evolFin || evolDebut > evolFin) { setEvolution([]); return; }
     setEvolError(null);
     try {
-      const rows = await rpc("evolution_resultats", accessToken, { p_granularite: granulariteEvol, p_debut: evolDebut, p_fin: evolFin });
+      const rows = await rpc("evolution_resultats", accessToken, {
+        p_granularite: granulariteEvol, p_debut: evolDebut, p_fin: evolFin,
+        p_campagne_id: campagneId || null, p_equipe_id: equipeId || null,
+      });
       setEvolution(rows || []);
     } catch (e) { setEvolError(e.message); }
-  }, [accessToken, granulariteEvol, evolDebut, evolFin]);
+  }, [accessToken, granulariteEvol, evolDebut, evolFin, campagneId, equipeId]);
 
   useEffect(() => { loadEvolution(); }, [loadEvolution]);
 
@@ -2440,7 +2452,21 @@ function AnalyticsPanel({ accessToken }) {
       </header>
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-        <div className="flex items-center justify-end flex-wrap gap-3" style={{ marginBottom: 16 }}>
+        <div className="flex items-center justify-between flex-wrap gap-3" style={{ marginBottom: 16 }}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select value={campagneId} onChange={(e) => setCampagneId(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, color: C.text, background: C.surface }}>
+              <option value="">Toutes les campagnes</option>
+              {campagnes.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+            </select>
+            {equipes.length > 0 && (
+              <select value={equipeId} onChange={(e) => setEquipeId(e.target.value)}
+                style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, color: C.text, background: C.surface }}>
+                <option value="">Toutes les équipes</option>
+                {equipes.map((eq) => <option key={eq.id} value={eq.id}>{eq.nom}</option>)}
+              </select>
+            )}
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             <div style={{ background: C.canvas, borderRadius: 9, padding: 3 }} className="flex gap-1">
               {[{ id: "semaine", label: "Semaine" }, { id: "mois", label: "Mois" }].map((g) => (
