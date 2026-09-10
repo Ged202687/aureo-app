@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, Plus, Trash2, UserCircle2, FastForward, Inbox, ArrowRight,
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
-  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award,
+  PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award, TrendingUp,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -525,16 +525,17 @@ function useElapsed(since) {
 }
 
 const ROLE_DEFAULT_TABS = {
-  super_admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
-  admin: ["dashboard", "resultats", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
-  superviseur: ["dashboard", "resultats", "queue", "recherche", "presence", "export"],
-  coach: ["poste", "dashboard", "resultats", "export"],
-  agent: ["poste", "resultats"],
+  super_admin: ["dashboard", "resultats", "analytics", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
+  admin: ["dashboard", "resultats", "analytics", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
+  superviseur: ["dashboard", "resultats", "analytics", "queue", "recherche", "presence", "export"],
+  coach: ["poste", "dashboard", "resultats", "analytics", "export"],
+  agent: ["poste", "resultats", "analytics"],
 };
 const TAB_DEFS = [
   { id: "poste", label: "Poste de travail", icon: Inbox },
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { id: "resultats", label: "Mes résultats", icon: Award },
+  { id: "analytics", label: "Analytics", icon: TrendingUp },
   { id: "queue", label: "File d'attente", icon: Users },
   { id: "recherche", label: "Recherche", icon: Search },
   { id: "presence", label: "Présence", icon: Timer },
@@ -746,6 +747,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
+              {adminTab === "analytics" && effectiveTabs.has("analytics") && <AnalyticsPanel accessToken={accessToken} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -2261,6 +2263,8 @@ function MultiCalendar({ selected, onToggle }) {
   );
 }
 
+const AUREO_DATE_REFERENCE = "2026-09-01"; // date d'entrée en service, point de départ par défaut de l'évolution
+
 function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
   const [selected, setSelected] = useState([toISODate(new Date())]);
   const [stats, setStats] = useState(null);
@@ -2394,6 +2398,133 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsPanel({ accessToken }) {
+  const [granulariteEvol, setGranulariteEvol] = useState("semaine");
+  const [evolDebut, setEvolDebut] = useState(AUREO_DATE_REFERENCE);
+  const [evolFin, setEvolFin] = useState(toISODate(new Date()));
+  const [evolution, setEvolution] = useState(null);
+  const [evolError, setEvolError] = useState(null);
+
+  const loadEvolution = useCallback(async () => {
+    if (!evolDebut || !evolFin || evolDebut > evolFin) { setEvolution([]); return; }
+    setEvolError(null);
+    try {
+      const rows = await rpc("evolution_resultats", accessToken, { p_granularite: granulariteEvol, p_debut: evolDebut, p_fin: evolFin });
+      setEvolution(rows || []);
+    } catch (e) { setEvolError(e.message); }
+  }, [accessToken, granulariteEvol, evolDebut, evolFin]);
+
+  useEffect(() => { loadEvolution(); }, [loadEvolution]);
+
+  const seriesEvolution = useMemo(() => {
+    if (!evolution) return null;
+    const label = (p) => formatPeriodeLabel(p, granulariteEvol);
+    return {
+      fiches: evolution.map((r) => ({ label: label(r.periode), value: r.fiches_traitees })),
+      rechargements: evolution.map((r) => ({ label: label(r.periode), value: r.rechargements_valides })),
+      joignabilite: evolution.map((r) => ({ label: label(r.periode), value: r.fiches_traitees > 0 ? (r.contacts / r.fiches_traitees) * 100 : 0 })),
+      conversion: evolution.map((r) => ({ label: label(r.periode), value: r.contacts > 0 ? (r.ventes / r.contacts) * 100 : 0 })),
+    };
+  }, [evolution, granulariteEvol]);
+
+  return (
+    <div>
+      <header className="mb-6">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Analytics</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Évolution sur votre périmètre (vous-même, votre équipe, ou plus selon votre rôle), depuis le lancement d'Auréo.</p>
+      </header>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
+        <div className="flex items-center justify-end flex-wrap gap-3" style={{ marginBottom: 16 }}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div style={{ background: C.canvas, borderRadius: 9, padding: 3 }} className="flex gap-1">
+              {[{ id: "semaine", label: "Semaine" }, { id: "mois", label: "Mois" }].map((g) => (
+                <button key={g.id} onClick={() => setGranulariteEvol(g.id)}
+                  style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: granulariteEvol === g.id ? C.ink : "transparent", color: granulariteEvol === g.id ? "#fff" : C.muted, fontSize: 12, fontWeight: 600 }}>
+                  {g.label}
+                </button>
+              ))}
+            </div>
+            <input type="date" value={evolDebut} max={evolFin} onChange={(e) => setEvolDebut(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12 }} />
+            <span style={{ fontSize: 12, color: C.mutedSoft }}>→</span>
+            <input type="date" value={evolFin} min={evolDebut} max={toISODate(new Date())} onChange={(e) => setEvolFin(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12 }} />
+          </div>
+        </div>
+
+        {evolError && <ErrorBlock message={evolError} />}
+        {!evolError && (
+          evolution === null ? (
+            <CenterLoader />
+          ) : evolution.length === 0 ? (
+            <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche traitée sur cette période.</p>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <TrendChart title="Fiches traitées" points={seriesEvolution.fiches} color={C.ink} />
+              <TrendChart title="Rechargements validés" points={seriesEvolution.rechargements} color={C.amber} />
+              <TrendChart title="Taux de joignabilité" points={seriesEvolution.joignabilite} color={C.teal} isPercent />
+              <TrendChart title="Taux de conversion" points={seriesEvolution.conversion} color={C.green} isPercent />
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatPeriodeLabel(iso, granularite) {
+  const d = new Date(iso + "T00:00:00");
+  return granularite === "mois"
+    ? d.toLocaleDateString("fr-FR", { month: "short", year: "numeric" })
+    : d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+}
+
+function TrendChart({ title, points, color, isPercent }) {
+  const w = 280, h = 90, padX = 4, padY = 8;
+  const values = points.map((p) => p.value);
+  const maxV = isPercent ? 100 : Math.max(...values, 1) * 1.15;
+  const stepX = points.length > 1 ? (w - padX * 2) / (points.length - 1) : 0;
+  const coords = points.map((p, i) => [
+    padX + i * stepX,
+    h - padY - (p.value / (maxV || 1)) * (h - padY * 2),
+  ]);
+  const pathD = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const areaD = coords.length > 1 ? `${pathD} L${coords[coords.length - 1][0].toFixed(1)},${h - padY} L${coords[0][0].toFixed(1)},${h - padY} Z` : "";
+  const last = points[points.length - 1];
+  const first = points[0];
+  const delta = points.length > 1 ? last.value - first.value : 0;
+  const fmt = (v) => (isPercent ? `${Math.round(v)}%` : Math.round(v).toLocaleString("fr-FR"));
+
+  return (
+    <div style={{ background: C.canvas, borderRadius: 10, padding: 14 }}>
+      <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>{title}</span>
+        {points.length > 1 && delta !== 0 && (
+          <span style={{ fontSize: 11, fontWeight: 600, color: delta > 0 ? C.green : C.red }}>
+            {delta > 0 ? "▲" : "▼"} {fmt(Math.abs(delta))}{isPercent ? " pt" : ""}
+          </span>
+        )}
+      </div>
+      <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, color: C.ink, marginBottom: 6 }}>{fmt(last.value)}</div>
+      <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 64, display: "block" }} preserveAspectRatio="none">
+        <line x1={0} y1={h - padY} x2={w} y2={h - padY} stroke={C.border} strokeWidth="1" />
+        {coords.length > 1 && (
+          <>
+            <path d={areaD} fill={color} opacity="0.12" stroke="none" />
+            <path d={pathD} fill="none" stroke={color} strokeWidth="2" />
+          </>
+        )}
+        {coords.map(([x, y], i) => <circle key={i} cx={x} cy={y} r={2.5} fill={color} />)}
+      </svg>
+      <div className="flex items-center justify-between" style={{ marginTop: 4 }}>
+        <span style={{ fontSize: 9.5, color: C.mutedSoft }}>{first.label}</span>
+        {points.length > 1 && <span style={{ fontSize: 9.5, color: C.mutedSoft }}>{last.label}</span>}
       </div>
     </div>
   );
