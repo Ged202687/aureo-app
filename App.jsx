@@ -816,7 +816,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const [submitting, setSubmitting] = useState(false);
   const [lastOutcome, setLastOutcome] = useState(null);
   const [error, setError] = useState(null);
-  const [lastQualif, setLastQualif] = useState(null);
+  const [historique, setHistorique] = useState([]);
+  const [showHistorique, setShowHistorique] = useState(false);
   const [campagneInfo, setCampagneInfo] = useState(null); // { nom, script }
   const [stats, setStats] = useState({ fiches: 0, rappels: 0, ventes: 0 });
   const [myPresence, setMyPresence] = useState(null);
@@ -904,15 +905,15 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   async function openFicheDirect(f) {
     setFiche(f);
     ficheStartRef.current = f ? Date.now() : null;
-    setCat(null); setSub(null); setNote(""); setLastOutcome(null); setLastQualif(null); setCampagneInfo(null);
+    setCat(null); setSub(null); setNote(""); setLastOutcome(null); setHistorique([]); setShowHistorique(false); setCampagneInfo(null);
     setView("poste");
     if (f) {
       try {
         const hist = await supaRest(
-          `qualifications?select=commentaire,created_at,types_qualification(categorie,motif)&client_id=eq.${f.id}&order=created_at.desc&limit=1`,
+          `qualifications?select=id,commentaire,created_at,types_qualification(categorie,motif),profils(nom)&client_id=eq.${f.id}&order=created_at.desc`,
           { accessToken }
         );
-        setLastQualif(hist[0] || null);
+        setHistorique(hist);
       } catch {}
       loadCampagneInfo(f.lot_id);
     }
@@ -920,7 +921,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   }
 
   async function pullNext() {
-    setPulling(true); setError(null); setLastOutcome(null); setLastQualif(null); setCampagneInfo(null);
+    setPulling(true); setError(null); setLastOutcome(null); setHistorique([]); setShowHistorique(false); setCampagneInfo(null);
     try {
       const result = await rpc("get_next_fiche", accessToken, {});
       const f = result && result.id ? result : null;
@@ -930,10 +931,10 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       if (f) {
         try {
           const hist = await supaRest(
-            `qualifications?select=commentaire,created_at,types_qualification(categorie,motif)&client_id=eq.${f.id}&order=created_at.desc&limit=1`,
+            `qualifications?select=id,commentaire,created_at,types_qualification(categorie,motif),profils(nom)&client_id=eq.${f.id}&order=created_at.desc`,
             { accessToken }
           );
-          setLastQualif(hist[0] || null);
+          setHistorique(hist);
         } catch {}
         loadCampagneInfo(f.lot_id);
       }
@@ -1061,7 +1062,23 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       })()}
 
       {view === "recherche" ? (
-        <AgentSearch accessToken={accessToken} agentId={agentId} onAfficher={openFicheDirect} />
+        <>
+          {fiche && (
+            <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, padding: "12px 16px", marginBottom: 16 }}
+              className="flex items-center justify-between gap-3 flex-wrap">
+              <span className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>
+                <Timer size={14} color={C.amber} />
+                Fiche en cours : {fiche.nom}{fiche.numero_box ? ` · Box ${fiche.numero_box}` : ""}
+                <span className="mono" style={{ fontSize: 11.5, fontWeight: 500, color: C.muted }}>{ficheElapsedStr}</span>
+              </span>
+              <button onClick={() => setView("poste")}
+                style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "7px 13px", fontSize: 12, fontWeight: 600 }}>
+                Reprendre la fiche
+              </button>
+            </div>
+          )}
+          <AgentSearch accessToken={accessToken} agentId={agentId} onAfficher={openFicheDirect} ficheEnCours={fiche} />
+        </>
       ) : (
       <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 20, alignItems: "start" }}>
       <div>
@@ -1144,16 +1161,29 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
             <div className="mono flex items-center gap-1.5" style={{ padding: "7px 18px", background: C.canvas, borderBottom: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.muted }}>
               <Clock size={11} /> {ficheElapsedStr} sur cette fiche
             </div>
-            {lastQualif && (
+            {historique.length > 0 && (
               <div style={{ padding: "10px 18px", background: C.amberSoft, borderBottom: `1px solid ${C.amber}` }}>
                 <div className="flex items-center gap-1.5" style={{ fontSize: 10.5, color: C.ink, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em" }}>
-                  <History size={12} color={C.amber} /> Déjà contactée · {new Date(lastQualif.created_at).toLocaleDateString("fr-FR")}
+                  <History size={12} color={C.amber} /> Déjà contactée · {historique.length} passage{historique.length > 1 ? "s" : ""}
                 </div>
-                <div style={{ fontSize: 12.5, fontWeight: 600, marginTop: 2 }}>
-                  {lastQualif.types_qualification?.categorie} · {lastQualif.types_qualification?.motif}
-                </div>
-                {lastQualif.commentaire && (
-                  <p style={{ fontSize: 11.5, color: C.muted, marginTop: 3, lineHeight: 1.4, fontStyle: "italic" }}>« {lastQualif.commentaire} »</p>
+                {(showHistorique ? historique : historique.slice(0, 1)).map((h, i) => (
+                  <div key={h.id} style={{ marginTop: i === 0 ? 4 : 10, paddingTop: i === 0 ? 0 : 10, borderTop: i === 0 ? "none" : `1px solid ${C.amber}` }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+                      {h.types_qualification?.categorie} · {h.types_qualification?.motif}
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                      {new Date(h.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} · {h.profils?.nom || "agent"}
+                    </div>
+                    {h.commentaire && (
+                      <p style={{ fontSize: 11.5, color: C.muted, marginTop: 3, lineHeight: 1.4, fontStyle: "italic" }}>« {h.commentaire} »</p>
+                    )}
+                  </div>
+                ))}
+                {historique.length > 1 && (
+                  <button onClick={() => setShowHistorique((v) => !v)}
+                    style={{ background: "none", border: "none", padding: "6px 0 0", fontSize: 11.5, fontWeight: 600, color: C.ink, textDecoration: "underline" }}>
+                    {showHistorique ? "Masquer l'historique" : `Voir les ${historique.length - 1} passage${historique.length > 2 ? "s" : ""} précédent${historique.length > 2 ? "s" : ""}`}
+                  </button>
                 )}
               </div>
             )}
@@ -1433,7 +1463,7 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
   );
 }
 
-function AgentSearch({ accessToken, agentId, onAfficher }) {
+function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
   const [verrouillees, setVerrouillees] = useState([]);
@@ -1463,7 +1493,7 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
       let verrouillees = [];
       if (candidats.length > 0) {
         const historique = await supaRest(
-          `qualifications?select=client_id,created_at,types_qualification(categorie,motif)&client_id=in.(${candidats.map((r) => r.id).join(",")})&order=created_at.desc`,
+          `qualifications?select=client_id,created_at,agent_id,types_qualification(categorie,motif)&client_id=in.(${candidats.map((r) => r.id).join(",")})&order=created_at.desc`,
           { accessToken }
         );
         const derniereParClient = new Map();
@@ -1473,6 +1503,9 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
             const derniere = derniereParClient.get(r.id);
             const estRappel = derniere?.types_qualification?.categorie === "À rappeler";
             const estRechargementValide = derniere?.types_qualification?.categorie === "Positif" && derniere?.types_qualification?.motif === "Rechargement validé";
+            // Un client avance parfois son rendez-vous : l'agent qui a posé le
+            // rappel doit pouvoir le rouvrir avant l'échéance. Les autres non.
+            if (estRappel && derniere.agent_id === agentId) return null;
             if (!estRappel && !estRechargementValide) return null;
             return { ...r, validationDate: estRechargementValide ? derniere.created_at : null };
           })
@@ -1485,6 +1518,13 @@ function AgentSearch({ accessToken, agentId, onAfficher }) {
   }
 
   async function handleAfficher(client) {
+    // Le clic réserve la fiche (statut "en cours") : si l'agent en a déjà une
+    // non qualifiée, on refuse avant l'écriture, sinon les deux fiches seraient
+    // en cours sous son compte et la première sortirait de son écran.
+    if (ficheEnCours && client.id !== ficheEnCours.id) {
+      setError(`Qualifiez d'abord la fiche en cours (${ficheEnCours.nom}) avant d'en ouvrir une autre.`);
+      return;
+    }
     setOpeningId(client.id); setError(null);
     try {
       const [updated] = await supaRest(`clients?id=eq.${client.id}`, {
