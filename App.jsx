@@ -909,11 +909,9 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     setView("poste");
     if (f) {
       try {
-        const hist = await supaRest(
-          `qualifications?select=id,commentaire,created_at,types_qualification(categorie,motif),profils(nom)&client_id=eq.${f.id}&order=created_at.desc`,
-          { accessToken }
-        );
-        setHistorique(hist);
+        // RPC plutot que l'embed profils : la RLS masque le nom d'un collegue.
+        const hist = await rpc("historique_client", accessToken, { p_client_id: f.id });
+        setHistorique(hist || []);
       } catch {}
       loadCampagneInfo(f.lot_id);
     }
@@ -930,11 +928,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       setCat(null); setSub(null); setNote("");
       if (f) {
         try {
-          const hist = await supaRest(
-            `qualifications?select=id,commentaire,created_at,types_qualification(categorie,motif),profils(nom)&client_id=eq.${f.id}&order=created_at.desc`,
-            { accessToken }
-          );
-          setHistorique(hist);
+          const hist = await rpc("historique_client", accessToken, { p_client_id: f.id });
+          setHistorique(hist || []);
         } catch {}
         loadCampagneInfo(f.lot_id);
       }
@@ -1169,10 +1164,10 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                 {(showHistorique ? historique : historique.slice(0, 1)).map((h, i) => (
                   <div key={h.id} style={{ marginTop: i === 0 ? 4 : 10, paddingTop: i === 0 ? 0 : 10, borderTop: i === 0 ? "none" : `1px solid ${C.amber}` }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600 }}>
-                      {h.types_qualification?.categorie} · {h.types_qualification?.motif}
+                      {h.categorie} · {h.motif}
                     </div>
                     <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                      {new Date(h.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} · {h.profils?.nom || "agent"}
+                      {new Date(h.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} · {h.agent_nom || "agent"}
                     </div>
                     {h.commentaire && (
                       <p style={{ fontSize: 11.5, color: C.muted, marginTop: 3, lineHeight: 1.4, fontStyle: "italic" }}>« {h.commentaire} »</p>
