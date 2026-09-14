@@ -753,7 +753,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
               {adminTab === "export" && effectiveTabs.has("export") && <ExportPanel accessToken={accessToken} />}
               {adminTab === "import" && effectiveTabs.has("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
-              {adminTab === "campagnes" && effectiveTabs.has("campagnes") && <CampaignsPanel accessToken={accessToken} />}
+              {adminTab === "campagnes" && effectiveTabs.has("campagnes") && <CampaignsPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
               {adminTab === "recyclage" && effectiveTabs.has("recyclage") && <RecyclagePanel accessToken={accessToken} />}
               {adminTab === "equipes" && effectiveTabs.has("equipes") && <EquipesPanel accessToken={accessToken} />}
               {adminTab === "utilisateurs" && effectiveTabs.has("utilisateurs") && <UsersPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
@@ -3362,9 +3362,16 @@ function ImportPanel({ accessToken, bump }) {
       // une forme normalisée (chiffres seuls, zéro initial ignoré) pour rattraper
       // les cas où le même numéro a été importé une fois avec et une fois sans son
       // zéro initial (ex: fichiers Excel où la colonne a été lue comme un nombre).
-      const boxVariantes = [...new Set(payload.flatMap((p) => variantesNumero(p.numero_box)))];
-      const parBox = boxVariantes.length > 0 ? await fetchInChunks("clients?select=numero_box&numero_box=in.(", boxVariantes, accessToken) : [];
-      const boxesExistants = new Set(parBox.map((c) => normaliserNumero(c.numero_box)));
+      // Certaines campagnes ciblent volontairement des clients deja en base
+      // (un upsell, par exemple) : le super admin peut alors couper la detection.
+      const detectionActive = (campagnes || []).find((c) => c.id === campagneId)?.detection_doublons !== false;
+
+      let boxesExistants = new Set();
+      if (detectionActive) {
+        const boxVariantes = [...new Set(payload.flatMap((p) => variantesNumero(p.numero_box)))];
+        const parBox = boxVariantes.length > 0 ? await fetchInChunks("clients?select=numero_box&numero_box=in.(", boxVariantes, accessToken) : [];
+        boxesExistants = new Set(parBox.map((c) => normaliserNumero(c.numero_box)));
+      }
 
       const aInserer = [];
       let doublons = 0;
@@ -3475,6 +3482,12 @@ function ImportPanel({ accessToken, bump }) {
                 )}
               </div>
             )}
+            {(campagnes || []).find((c) => c.id === campagneId)?.detection_doublons === false && (
+              <div className="flex items-start gap-2" style={{ marginTop: 10, background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 11px", fontSize: 11.5, color: C.ink, lineHeight: 1.45 }}>
+                <AlertTriangle size={13} color={C.amber} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>Détection des doublons désactivée sur cette campagne : toutes les lignes seront importées, y compris les numéros de box déjà présents en base.</span>
+              </div>
+            )}
           </div>
 
           {/* Étape 2 — Lot (sous-ensemble de fiches, attribué à un agent ou un groupe) */}
@@ -3568,7 +3581,7 @@ function ImportPanel({ accessToken, bump }) {
 
 /* ---------------------------------- admin : campagnes & lots ---------------------------------- */
 
-function CampaignsPanel({ accessToken }) {
+function CampaignsPanel({ accessToken, isSuperAdmin }) {
   const [subTab, setSubTab] = useState("campagnes"); // campagnes | groupes
   const [campagnes, setCampagnes] = useState(null);
   const [lots, setLots] = useState(null);
@@ -3623,7 +3636,7 @@ function CampaignsPanel({ accessToken }) {
       {subTab === "campagnes" ? (
         <CampagnesTab
           accessToken={accessToken} campagnes={campagnes} lots={lots} lotsCibles={lotsCibles} groupes={groupes} agents={agents}
-          selected={selectedCampagne} setSelected={setSelectedCampagne} reload={loadAll}
+          selected={selectedCampagne} setSelected={setSelectedCampagne} reload={loadAll} isSuperAdmin={isSuperAdmin}
         />
       ) : (
         <GroupesTab
@@ -3635,7 +3648,7 @@ function CampaignsPanel({ accessToken }) {
   );
 }
 
-function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agents, selected, setSelected, reload }) {
+function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agents, selected, setSelected, reload, isSuperAdmin }) {
   const [showNew, setShowNew] = useState(false);
   const [nom, setNom] = useState("");
   const [description, setDescription] = useState("");
@@ -3649,6 +3662,7 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
   const [editingScript, setEditingScript] = useState(false);
   const [editScriptValue, setEditScriptValue] = useState("");
   const [savingScript, setSavingScript] = useState(false);
+  const [savingDetection, setSavingDetection] = useState(false);
 
   const [fichesParLot, setFichesParLot] = useState({});
 
@@ -3724,6 +3738,16 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
       setEditingNom(false);
       reload();
     } catch (e) { setError(e.message); } finally { setSavingNom(false); }
+  }
+
+  async function toggleDetectionDoublons(campagne) {
+    setSavingDetection(true); setError(null);
+    try {
+      await supaRest(`campagnes?id=eq.${campagne.id}`, {
+        method: "PATCH", accessToken, body: { detection_doublons: !campagne.detection_doublons },
+      });
+      reload();
+    } catch (e) { setError(e.message); } finally { setSavingDetection(false); }
   }
 
   async function saveScript(campagneId) {
@@ -3878,6 +3902,34 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                 <p style={{ fontSize: 12, color: C.mutedSoft }}>Aucun script — les agents ne verront rien de spécifique pour cette campagne.</p>
               )}
             </div>
+
+            {isSuperAdmin && (
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <div className="flex items-center gap-1.5" style={{ fontSize: 11.5, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                      <Hash size={13} /> Détection des doublons à l'import
+                    </div>
+                    <p style={{ fontSize: 12, color: C.mutedSoft, marginTop: 4, maxWidth: 520, lineHeight: 1.5 }}>
+                      {current.detection_doublons === false
+                        ? "Désactivée : toutes les lignes du fichier sont importées, même si le numéro de box existe déjà sur une autre campagne."
+                        : "Activée : une ligne dont le numéro de box existe déjà en base, toutes campagnes confondues, est ignorée à l'import."}
+                    </p>
+                  </div>
+                  <button onClick={() => toggleDetectionDoublons(current)} disabled={savingDetection}
+                    className="flex items-center gap-1.5"
+                    style={{
+                      background: current.detection_doublons === false ? C.surface : C.ink,
+                      color: current.detection_doublons === false ? C.text : "#fff",
+                      border: current.detection_doublons === false ? `1px solid ${C.border}` : "none",
+                      borderRadius: 7, padding: "7px 13px", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                    }}>
+                    {savingDetection && <Loader2 size={11} className="animate-spin" />}
+                    {current.detection_doublons === false ? "Activer" : "Désactiver"}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {error && <div className="mt-3"><ErrorBlock message={error} /></div>}
             {deleteInfo && (
