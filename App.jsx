@@ -883,7 +883,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const loadOrphelines = useCallback(async () => {
     try {
       const rows = await supaRest(
-        `clients?select=id,nom,telephone,numero_fiche,numero_box,updated_at&statut=eq.en_cours&agent_id=eq.${agentId}&order=updated_at.asc`,
+        `clients?select=id,nom,telephone,numero_fiche,numero_box,recuperee_le&statut=eq.en_cours&agent_id=eq.${agentId}&order=recuperee_le.asc.nullsfirst`,
         { accessToken }
       );
       setOrphelines(rows);
@@ -1110,7 +1110,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                     <div>
                       <div style={{ fontSize: 12.5, fontWeight: 500 }}>{o.nom}</div>
                       <div className="mono" style={{ fontSize: 10.5, color: C.mutedSoft }}>
-                        #{o.numero_fiche} · récupérée {formatRelatif(o.updated_at)}
+                        #{o.numero_fiche} · {o.recuperee_le ? `récupérée ${formatRelatif(o.recuperee_le)}` : "date de récupération inconnue"}
                       </div>
                     </div>
                     <button onClick={() => openFicheDirect(o)}
@@ -1523,7 +1523,7 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours }) {
     setOpeningId(client.id); setError(null);
     try {
       const [updated] = await supaRest(`clients?id=eq.${client.id}`, {
-        method: "PATCH", accessToken, body: { statut: "en_cours", agent_id: agentId },
+        method: "PATCH", accessToken, body: { statut: "en_cours", agent_id: agentId, recuperee_le: new Date().toISOString() },
       });
       onAfficher(updated || client);
     } catch (e) { setError(e.message); } finally { setOpeningId(null); }
@@ -1680,6 +1680,7 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
           lot_id: selectedLotId,
           statut: "en_cours",
           agent_id: agentId,
+          recuperee_le: new Date().toISOString(),
         },
       });
       onCreated(created);
@@ -2191,11 +2192,13 @@ function FichesBloqueesEquipe({ accessToken }) {
       const agentIds = (perimetre || []).map((r) => r.agent_id);
       if (agentIds.length === 0) { setRows([]); return; }
       const [clients, profils] = await Promise.all([
-        fetchInChunks(`clients?select=id,nom,numero_fiche,agent_id,updated_at&statut=eq.en_cours&agent_id=in.(`, agentIds, accessToken),
+        fetchInChunks(`clients?select=id,nom,numero_fiche,agent_id,recuperee_le&statut=eq.en_cours&agent_id=in.(`, agentIds, accessToken),
         fetchInChunks(`profils?select=id,nom&id=in.(`, agentIds, accessToken),
       ]);
       const merged = clients.map((c) => ({ ...c, agentNom: profils.find((p) => p.id === c.agent_id)?.nom || "Agent" }));
-      merged.sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at));
+      // Les fiches recuperees avant l'ajout de recuperee_le n'ont pas de date :
+      // on les laisse en tete, ce sont les plus anciennes par construction.
+      merged.sort((a, b) => new Date(a.recuperee_le || 0) - new Date(b.recuperee_le || 0));
       setRows(merged);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
@@ -2226,7 +2229,9 @@ function FichesBloqueesEquipe({ accessToken }) {
             <div>
               <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.nom}</span>
               <span className="mono" style={{ fontSize: 11, color: C.mutedSoft, marginLeft: 8 }}>#{r.numero_fiche}</span>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{r.agentNom} · récupérée {formatRelatif(r.updated_at)}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>
+                {r.agentNom} · {r.recuperee_le ? `récupérée ${formatRelatif(r.recuperee_le)}` : "date de récupération inconnue"}
+              </div>
             </div>
             <button onClick={() => liberer(r.id)} disabled={liberationEnCours === r.id}
               className="flex items-center gap-1.5" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 600, color: C.ink }}>
