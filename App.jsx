@@ -2303,8 +2303,6 @@ function MultiCalendar({ selected, onToggle }) {
   );
 }
 
-const AUREO_DATE_REFERENCE = "2026-09-01"; // date d'entrée en service, point de départ par défaut de l'évolution
-
 function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
   const [selected, setSelected] = useState([toISODate(new Date())]);
   const [stats, setStats] = useState(null);
@@ -2443,99 +2441,184 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
   );
 }
 
+// Bornes de la periode observee. On raisonne en dates locales pures (pas d'UTC)
+// pour que "lundi" reste lundi quel que soit le fuseau.
+function bornesPeriode(ancreISO, vue) {
+  const d = new Date(ancreISO + "T00:00:00");
+  if (vue === "mois") {
+    const debut = new Date(d.getFullYear(), d.getMonth(), 1);
+    const fin = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return { debut: toISODate(debut), fin: toISODate(fin) };
+  }
+  const decalage = (d.getDay() + 6) % 7; // lundi = 0
+  const debut = new Date(d.getFullYear(), d.getMonth(), d.getDate() - decalage);
+  const fin = new Date(debut.getFullYear(), debut.getMonth(), debut.getDate() + 6);
+  return { debut: toISODate(debut), fin: toISODate(fin) };
+}
+
+function decalerAncre(ancreISO, vue, pas) {
+  const d = new Date(ancreISO + "T00:00:00");
+  const suivant = vue === "mois"
+    ? new Date(d.getFullYear(), d.getMonth() + pas, 1)
+    : new Date(d.getFullYear(), d.getMonth(), d.getDate() + pas * 7);
+  return toISODate(suivant);
+}
+
+function libellePeriode(debut, fin, vue) {
+  const d = new Date(debut + "T00:00:00");
+  if (vue === "mois") {
+    const nom = d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+    return nom.charAt(0).toUpperCase() + nom.slice(1);
+  }
+  const f = new Date(fin + "T00:00:00");
+  const memeMois = d.getMonth() === f.getMonth();
+  return `${d.toLocaleDateString("fr-FR", { day: "numeric", ...(memeMois ? {} : { month: "short" }) })} – ${f.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })}`;
+}
+
 function AnalyticsPanel({ accessToken }) {
-  const [granulariteEvol, setGranulariteEvol] = useState("semaine");
-  const [evolDebut, setEvolDebut] = useState(AUREO_DATE_REFERENCE);
-  const [evolFin, setEvolFin] = useState(toISODate(new Date()));
-  const [evolution, setEvolution] = useState(null);
+  const [vue, setVue] = useState("semaine"); // semaine | mois
+  const [ancre, setAncre] = useState(toISODate(new Date()));
+  const [jours, setJours] = useState(null);
+  const [joursPrec, setJoursPrec] = useState(null);
   const [evolError, setEvolError] = useState(null);
   const [campagnes, setCampagnes] = useState([]);
   const [equipes, setEquipes] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [campagneId, setCampagneId] = useState("");
   const [equipeId, setEquipeId] = useState("");
+  const [agentId, setAgentId] = useState("");
+
+  const { debut, fin } = bornesPeriode(ancre, vue);
+  const precedent = bornesPeriode(decalerAncre(ancre, vue, -1), vue);
+  const aujourdhui = toISODate(new Date());
+  const periodeCourante = debut <= aujourdhui && aujourdhui <= fin;
 
   useEffect(() => {
     supaRest("campagnes?select=id,nom&order=nom.asc", { accessToken }).then(setCampagnes).catch(() => {});
     rpc("perimetre_equipes", accessToken, {}).then((rows) => setEquipes(rows || [])).catch(() => {});
+    rpc("perimetre_agents_nommes", accessToken, {}).then((rows) => setAgents(rows || [])).catch(() => {});
   }, [accessToken]);
 
   const loadEvolution = useCallback(async () => {
-    if (!evolDebut || !evolFin || evolDebut > evolFin) { setEvolution([]); return; }
     setEvolError(null);
+    const filtres = { p_campagne_id: campagneId || null, p_equipe_id: equipeId || null, p_agent_id: agentId || null };
     try {
-      const rows = await rpc("evolution_resultats", accessToken, {
-        p_granularite: granulariteEvol, p_debut: evolDebut, p_fin: evolFin,
-        p_campagne_id: campagneId || null, p_equipe_id: equipeId || null,
-      });
-      setEvolution(rows || []);
+      const [courant, avant] = await Promise.all([
+        rpc("evolution_resultats", accessToken, { p_debut: debut, p_fin: fin, ...filtres }),
+        rpc("evolution_resultats", accessToken, { p_debut: precedent.debut, p_fin: precedent.fin, ...filtres }),
+      ]);
+      setJours(courant || []);
+      setJoursPrec(avant || []);
     } catch (e) { setEvolError(e.message); }
-  }, [accessToken, granulariteEvol, evolDebut, evolFin, campagneId, equipeId]);
+  }, [accessToken, debut, fin, precedent.debut, precedent.fin, campagneId, equipeId, agentId]);
 
   useEffect(() => { loadEvolution(); }, [loadEvolution]);
 
-  const seriesEvolution = useMemo(() => {
-    if (!evolution) return null;
-    const label = (p) => formatPeriodeLabel(p, granulariteEvol);
+  // Comparer une periode en cours a une periode complete fabrique un effondrement
+  // qui n'existe pas. Tant que la periode court, on ne retient donc de la periode
+  // precedente que le meme nombre de jours ecoules, et on n'affiche pas les jours
+  // a venir.
+  const series = useMemo(() => {
+    if (!jours) return null;
+    const ecoules = periodeCourante
+      ? jours.findIndex((r) => r.jour === aujourdhui) + 1
+      : jours.length;
+    const visibles = periodeCourante ? jours.slice(0, ecoules) : jours;
+    const reference = (joursPrec || []).slice(0, ecoules);
+
+    const cumul = (rows) => rows.reduce((a, r) => ({
+      fiches: a.fiches + r.fiches_traitees, contacts: a.contacts + r.contacts,
+      ventes: a.ventes + r.ventes, recharges: a.recharges + r.rechargements_valides,
+    }), { fiches: 0, contacts: 0, ventes: 0, recharges: 0 });
+    const tot = cumul(visibles);
+    const prec = cumul(reference);
+    const taux = (n, d) => (d > 0 ? (n / d) * 100 : 0);
+    const pts = (f) => visibles.map((r) => ({ jour: r.jour, value: f(r), enCours: r.jour === aujourdhui }));
     return {
-      fiches: evolution.map((r) => ({ label: label(r.periode), value: r.fiches_traitees })),
-      rechargements: evolution.map((r) => ({ label: label(r.periode), value: r.rechargements_valides })),
-      joignabilite: evolution.map((r) => ({ label: label(r.periode), value: r.fiches_traitees > 0 ? (r.contacts / r.fiches_traitees) * 100 : 0 })),
-      conversion: evolution.map((r) => ({ label: label(r.periode), value: r.contacts > 0 ? (r.ventes / r.contacts) * 100 : 0 })),
+      joursEcoules: ecoules,
+      fiches: { points: pts((r) => r.fiches_traitees), total: tot.fiches, precedent: prec.fiches },
+      recharges: { points: pts((r) => r.rechargements_valides), total: tot.recharges, precedent: prec.recharges },
+      joignabilite: { points: pts((r) => taux(r.contacts, r.fiches_traitees)), total: taux(tot.contacts, tot.fiches), precedent: taux(prec.contacts, prec.fiches) },
+      conversion: { points: pts((r) => taux(r.ventes, r.contacts)), total: taux(tot.ventes, tot.contacts), precedent: taux(prec.ventes, prec.contacts) },
     };
-  }, [evolution, granulariteEvol]);
+  }, [jours, joursPrec, aujourdhui, periodeCourante]);
+
+  const selectStyle = { border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, color: C.text, background: C.surface, maxWidth: 210 };
+  const navStyle = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 13, fontWeight: 600, color: C.text };
 
   return (
     <div>
       <header className="mb-6">
         <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Analytics</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Évolution sur votre périmètre (vous-même, votre équipe, ou plus selon votre rôle), depuis le lancement d'Auréo.</p>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+          Jour par jour sur la période choisie, dans votre périmètre. Chaque total est comparé à la {vue === "mois" ? "même durée du mois précédent" : "semaine précédente"}.
+        </p>
       </header>
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
-        <div className="flex items-center justify-between flex-wrap gap-3" style={{ marginBottom: 16 }}>
+        <div className="flex items-center justify-between flex-wrap gap-3" style={{ marginBottom: 6 }}>
           <div className="flex items-center gap-2 flex-wrap">
-            <select value={campagneId} onChange={(e) => setCampagneId(e.target.value)}
-              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, color: C.text, background: C.surface }}>
+            <select value={campagneId} onChange={(e) => setCampagneId(e.target.value)} style={selectStyle}>
               <option value="">Toutes les campagnes</option>
               {campagnes.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
             </select>
-            {equipes.length > 0 && (
-              <select value={equipeId} onChange={(e) => setEquipeId(e.target.value)}
-                style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, color: C.text, background: C.surface }}>
+            {equipes.length > 1 && (
+              <select value={equipeId} onChange={(e) => setEquipeId(e.target.value)} style={selectStyle}>
                 <option value="">Toutes les équipes</option>
                 {equipes.map((eq) => <option key={eq.id} value={eq.id}>{eq.nom}</option>)}
+              </select>
+            )}
+            {agents.length > 1 && (
+              <select value={agentId} onChange={(e) => setAgentId(e.target.value)} style={selectStyle}>
+                <option value="">Tous les agents</option>
+                {agents.map((a) => <option key={a.id} value={a.id}>{a.nom}</option>)}
               </select>
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <div style={{ background: C.canvas, borderRadius: 9, padding: 3 }} className="flex gap-1">
               {[{ id: "semaine", label: "Semaine" }, { id: "mois", label: "Mois" }].map((g) => (
-                <button key={g.id} onClick={() => setGranulariteEvol(g.id)}
-                  style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: granulariteEvol === g.id ? C.ink : "transparent", color: granulariteEvol === g.id ? "#fff" : C.muted, fontSize: 12, fontWeight: 600 }}>
+                <button key={g.id} onClick={() => setVue(g.id)}
+                  style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: vue === g.id ? C.ink : "transparent", color: vue === g.id ? "#fff" : C.muted, fontSize: 12, fontWeight: 600 }}>
                   {g.label}
                 </button>
               ))}
             </div>
-            <input type="date" value={evolDebut} max={evolFin} onChange={(e) => setEvolDebut(e.target.value)}
-              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12 }} />
-            <span style={{ fontSize: 12, color: C.mutedSoft }}>→</span>
-            <input type="date" value={evolFin} min={evolDebut} max={toISODate(new Date())} onChange={(e) => setEvolFin(e.target.value)}
-              style={{ border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12 }} />
+            <div className="flex items-center gap-1">
+              <button onClick={() => setAncre(decalerAncre(ancre, vue, -1))} style={navStyle} title="Période précédente">←</button>
+              <span className="disp" style={{ fontSize: 13, fontWeight: 600, minWidth: 150, textAlign: "center" }}>{libellePeriode(debut, fin, vue)}</span>
+              <button onClick={() => setAncre(decalerAncre(ancre, vue, 1))} disabled={fin >= aujourdhui}
+                style={{ ...navStyle, opacity: fin >= aujourdhui ? 0.4 : 1 }} title="Période suivante">→</button>
+            </div>
+            {!periodeCourante && (
+              <button onClick={() => setAncre(aujourdhui)} style={{ ...navStyle, fontSize: 12 }}>Aujourd'hui</button>
+            )}
           </div>
         </div>
 
+        {periodeCourante && series && (
+          <p style={{ fontSize: 11, color: C.mutedSoft, marginBottom: 14 }}>
+            Période en cours : {series.joursEcoules} jour{series.joursEcoules > 1 ? "s" : ""} écoulé{series.joursEcoules > 1 ? "s" : ""}, comparé{series.joursEcoules > 1 ? "s" : ""} aux {series.joursEcoules} premier{series.joursEcoules > 1 ? "s" : ""} jour{series.joursEcoules > 1 ? "s" : ""} de la période précédente. Le jour en cours est hachuré.
+          </p>
+        )}
+
         {evolError && <ErrorBlock message={evolError} />}
         {!evolError && (
-          evolution === null ? (
+          jours === null ? (
             <CenterLoader />
-          ) : evolution.length === 0 ? (
-            <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche traitée sur cette période.</p>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              <TrendChart title="Fiches traitées" points={seriesEvolution.fiches} color={C.ink} />
-              <TrendChart title="Rechargements validés" points={seriesEvolution.rechargements} color={C.amber} />
-              <TrendChart title="Taux de joignabilité" points={seriesEvolution.joignabilite} color={C.teal} isPercent />
-              <TrendChart title="Taux de conversion" points={seriesEvolution.conversion} color={C.green} isPercent />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: periodeCourante ? 0 : 10 }}>
+              {(() => {
+                const ref = periodeCourante ? `sur les ${series.joursEcoules} premiers jours précédents` : "période précédente";
+                return (
+                  <>
+                    <DailyChart titre="Fiches traitées" serie={series.fiches} couleur={C.ink} reference={ref} />
+                    <DailyChart titre="Rechargements validés" serie={series.recharges} couleur={C.amber} reference={ref} />
+                    <DailyChart titre="Taux de joignabilité" serie={series.joignabilite} couleur={C.teal} pourcentage reference={ref} />
+                    <DailyChart titre="Taux de conversion" serie={series.conversion} couleur={C.green} pourcentage reference={ref} />
+                  </>
+                );
+              })()}
             </div>
           )
         )}
@@ -2544,54 +2627,67 @@ function AnalyticsPanel({ accessToken }) {
   );
 }
 
-function formatPeriodeLabel(iso, granularite) {
-  const d = new Date(iso + "T00:00:00");
-  return granularite === "mois"
-    ? d.toLocaleDateString("fr-FR", { month: "short", year: "numeric" })
-    : d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
-}
+const JOURS_COURTS = ["D", "L", "M", "M", "J", "V", "S"];
 
-function TrendChart({ title, points, color, isPercent }) {
-  const w = 280, h = 90, padX = 4, padY = 8;
-  const values = points.map((p) => p.value);
-  const maxV = isPercent ? 100 : Math.max(...values, 1) * 1.15;
-  const stepX = points.length > 1 ? (w - padX * 2) / (points.length - 1) : 0;
-  const coords = points.map((p, i) => [
-    padX + i * stepX,
-    h - padY - (p.value / (maxV || 1)) * (h - padY * 2),
-  ]);
-  const pathD = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  const areaD = coords.length > 1 ? `${pathD} L${coords[coords.length - 1][0].toFixed(1)},${h - padY} L${coords[0][0].toFixed(1)},${h - padY} Z` : "";
-  const last = points[points.length - 1];
-  const first = points[0];
-  const delta = points.length > 1 ? last.value - first.value : 0;
-  const fmt = (v) => (isPercent ? `${Math.round(v)}%` : Math.round(v).toLocaleString("fr-FR"));
+function DailyChart({ titre, serie, couleur, pourcentage, reference }) {
+  const { points, total, precedent } = serie;
+  const fmt = (v) => (pourcentage ? `${Math.round(v)} %` : Math.round(v).toLocaleString("fr-FR"));
+  const delta = total - precedent;
+  const maxV = pourcentage ? 100 : Math.max(...points.map((p) => p.value), 1);
+
+  const w = 300, h = 96, basY = h - 16, hautMax = basY - 8;
+  const pas = w / Math.max(points.length, 1);
+  const largeur = Math.max(pas * 0.62, 2);
+
+  // Un mois compte trop de jours pour tout etiqueter : un jour sur trois suffit
+  // a se reperer, et on garde toujours le premier et le dernier.
+  const rythme = points.length > 12 ? 3 : 1;
 
   return (
     <div style={{ background: C.canvas, borderRadius: 10, padding: 14 }}>
-      <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>{title}</span>
-        {points.length > 1 && delta !== 0 && (
-          <span style={{ fontSize: 11, fontWeight: 600, color: delta > 0 ? C.green : C.red }}>
-            {delta > 0 ? "▲" : "▼"} {fmt(Math.abs(delta))}{isPercent ? " pt" : ""}
-          </span>
-        )}
+      <div className="flex items-baseline justify-between" style={{ marginBottom: 2 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>{titre}</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: delta === 0 ? C.mutedSoft : delta > 0 ? C.green : C.red }}>
+          {delta === 0 ? "=" : `${delta > 0 ? "▲" : "▼"} ${fmt(Math.abs(delta))}${pourcentage ? " pt" : ""}`}
+        </span>
       </div>
-      <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, color: C.ink, marginBottom: 6 }}>{fmt(last.value)}</div>
-      <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 64, display: "block" }} preserveAspectRatio="none">
-        <line x1={0} y1={h - padY} x2={w} y2={h - padY} stroke={C.border} strokeWidth="1" />
-        {coords.length > 1 && (
-          <>
-            <path d={areaD} fill={color} opacity="0.12" stroke="none" />
-            <path d={pathD} fill="none" stroke={color} strokeWidth="2" />
-          </>
-        )}
-        {coords.map(([x, y], i) => <circle key={i} cx={x} cy={y} r={2.5} fill={color} />)}
+      <div className="flex items-baseline gap-2" style={{ marginBottom: 8 }}>
+        <span className="disp mono" style={{ fontSize: 24, fontWeight: 700, color: C.ink }}>{fmt(total)}</span>
+        <span style={{ fontSize: 10.5, color: C.mutedSoft }}>vs {fmt(precedent)} {reference}</span>
+      </div>
+
+      <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 108, display: "block", overflow: "visible" }}>
+        <defs>
+          <pattern id={`hachure-${titre.replace(/\s/g, "")}`} width="4" height="4" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+            <rect width="4" height="4" fill={couleur} opacity="0.25" />
+            <line x1="0" y1="0" x2="0" y2="4" stroke={couleur} strokeWidth="2" />
+          </pattern>
+        </defs>
+        {[0, 0.5, 1].map((f) => (
+          <line key={f} x1={0} y1={basY - f * hautMax} x2={w} y2={basY - f * hautMax}
+            stroke={C.border} strokeWidth="1" strokeDasharray={f === 0 ? "" : "3 3"} />
+        ))}
+        <text x={2} y={basY - hautMax - 3} fontSize="8" fill={C.mutedSoft}>{fmt(maxV)}</text>
+
+        {points.map((p, i) => {
+          const hauteur = Math.max((p.value / (maxV || 1)) * hautMax, p.value > 0 ? 2 : 0);
+          const x = i * pas + (pas - largeur) / 2;
+          const d = new Date(p.jour + "T00:00:00");
+          return (
+            <g key={p.jour}>
+              <rect x={x} y={basY - hauteur} width={largeur} height={hauteur} rx={1.5}
+                fill={p.enCours ? `url(#hachure-${titre.replace(/\s/g, "")})` : couleur}
+                opacity={p.enCours ? 1 : 0.85} />
+              <title>{`${d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} : ${fmt(p.value)}${p.enCours ? " (jour en cours)" : ""}`}</title>
+              {(i % rythme === 0 || i === points.length - 1) && (
+                <text x={i * pas + pas / 2} y={basY + 9} fontSize="7.5" textAnchor="middle" fill={C.mutedSoft}>
+                  {points.length > 12 ? d.getDate() : `${JOURS_COURTS[d.getDay()]}${d.getDate()}`}
+                </text>
+              )}
+            </g>
+          );
+        })}
       </svg>
-      <div className="flex items-center justify-between" style={{ marginTop: 4 }}>
-        <span style={{ fontSize: 9.5, color: C.mutedSoft }}>{first.label}</span>
-        {points.length > 1 && <span style={{ fontSize: 9.5, color: C.mutedSoft }}>{last.label}</span>}
-      </div>
     </div>
   );
 }
