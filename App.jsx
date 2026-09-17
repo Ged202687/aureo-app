@@ -1072,7 +1072,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
               </button>
             </div>
           )}
-          <AgentSearch accessToken={accessToken} agentId={agentId} onAfficher={openFicheDirect} ficheEnCours={fiche} />
+          <AgentSearch accessToken={accessToken} agentId={agentId} onAfficher={openFicheDirect} ficheEnCours={fiche} enProduction={statut === "en_prod"} />
         </>
       ) : (
       <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 20, alignItems: "start" }}>
@@ -1126,7 +1126,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       })()}
 
       {!fiche ? (
-        <EmptyOrOutcome outcome={lastOutcome} onPull={pullNext} pulling={pulling} onCreateClient={() => setShowCreateClient(true)} />
+        <EmptyOrOutcome outcome={lastOutcome} onPull={pullNext} pulling={pulling} onCreateClient={() => setShowCreateClient(true)} enProduction={statut === "en_prod"} />
       ) : (
         <>
         {campagneInfo?.script && (
@@ -1458,7 +1458,7 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
   );
 }
 
-function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours }) {
+function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduction }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
   const [verrouillees, setVerrouillees] = useState([]);
@@ -1513,6 +1513,12 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours }) {
   }
 
   async function handleAfficher(client) {
+    // Le clic réserve la fiche : hors Production, la base la refusera de toute
+    // façon (trigger), autant le dire clairement avant l'aller-retour.
+    if (!enProduction) {
+      setError("Passe en statut Production pour prendre une fiche.");
+      return;
+    }
     // Le clic réserve la fiche (statut "en cours") : si l'agent en a déjà une
     // non qualifiée, on refuse avant l'écriture, sinon les deux fiches seraient
     // en cours sous son compte et la première sortirait de son écran.
@@ -1754,7 +1760,7 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
     </div>
   );
 }
-function EmptyOrOutcome({ outcome, onPull, pulling, onCreateClient }) {
+function EmptyOrOutcome({ outcome, onPull, pulling, onCreateClient, enProduction }) {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: "56px 24px", textAlign: "center" }}>
       {outcome ? (
@@ -1775,13 +1781,19 @@ function EmptyOrOutcome({ outcome, onPull, pulling, onCreateClient }) {
           <div style={{ fontSize: 14, fontWeight: 600 }}>Aucune fiche en cours</div>
         </div>
       )}
+      {!enProduction && (
+        <div className="flex items-center justify-center gap-2" style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 9, padding: "9px 14px", marginBottom: 16, fontSize: 12.5, color: C.ink }}>
+          <Lock size={13} color={C.amber} />
+          Passe en statut Production pour prendre une fiche.
+        </div>
+      )}
       <div className="flex items-center justify-center gap-3">
-        <button onClick={onPull} disabled={pulling}
-          style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 9, padding: "11px 22px", fontSize: 13.5, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <button onClick={onPull} disabled={pulling || !enProduction}
+          style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 9, padding: "11px 22px", fontSize: 13.5, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 8, opacity: enProduction ? 1 : 0.45, cursor: enProduction ? "pointer" : "not-allowed" }}>
           {pulling && <Loader2 size={14} className="animate-spin" />} Récupérer la fiche suivante
         </button>
-        <button onClick={onCreateClient}
-          style={{ background: C.surface, color: C.text, border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "11px 18px", fontSize: 13.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <button onClick={onCreateClient} disabled={!enProduction}
+          style={{ background: C.surface, color: C.text, border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "11px 18px", fontSize: 13.5, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 8, opacity: enProduction ? 1 : 0.45, cursor: enProduction ? "pointer" : "not-allowed" }}>
           <Phone size={14} color={C.teal} /> Créer client (appel entrant)
         </button>
       </div>
@@ -3764,6 +3776,8 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
   const [editScriptValue, setEditScriptValue] = useState("");
   const [savingScript, setSavingScript] = useState(false);
   const [savingDetection, setSavingDetection] = useState(false);
+  const [togglingLotId, setTogglingLotId] = useState(null);
+  const [togglingCampagne, setTogglingCampagne] = useState(false);
 
   const [fichesParLot, setFichesParLot] = useState({});
 
@@ -3839,6 +3853,22 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
       setEditingNom(false);
       reload();
     } catch (e) { setError(e.message); } finally { setSavingNom(false); }
+  }
+
+  async function toggleCampagneActive(campagne) {
+    setTogglingCampagne(true); setError(null);
+    try {
+      await supaRest(`campagnes?id=eq.${campagne.id}`, { method: "PATCH", accessToken, body: { actif: !campagne.actif } });
+      reload();
+    } catch (e) { setError(e.message); } finally { setTogglingCampagne(false); }
+  }
+
+  async function toggleLotActif(lot) {
+    setTogglingLotId(lot.id); setError(null);
+    try {
+      await supaRest(`lots?id=eq.${lot.id}`, { method: "PATCH", accessToken, body: { actif: !lot.actif } });
+      reload();
+    } catch (e) { setError(e.message); } finally { setTogglingLotId(null); }
   }
 
   async function toggleDetectionDoublons(campagne) {
@@ -3950,6 +3980,16 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                     title="Renommer" style={{ background: "none", border: "none", padding: 2 }}>
                     <ListChecks size={13} color={C.mutedSoft} />
                   </button>
+                  <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: current.actif === false ? C.muted : C.green }}>
+                      {current.actif === false ? "Campagne arrêtée" : "Campagne active"}
+                    </span>
+                    <button onClick={() => toggleCampagneActive(current)} disabled={togglingCampagne}
+                      title={current.actif === false ? "Relancer la campagne et ses lots" : "Arrêter la campagne et tous ses lots"}
+                      style={{ position: "relative", width: 34, height: 19, borderRadius: 999, border: "none", padding: 0, flexShrink: 0, background: current.actif === false ? C.border : C.green, transition: "background 0.15s" }}>
+                      <span style={{ position: "absolute", top: 2, left: current.actif === false ? 2 : 17, width: 15, height: 15, borderRadius: 999, background: "#fff", transition: "left 0.15s" }} />
+                    </button>
+                  </div>
                 </>
               ) : (
                 <div className="flex items-center gap-2" style={{ flex: 1 }}>
@@ -3965,6 +4005,12 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                 </div>
               )}
             </div>
+            {current.actif === false && (
+              <div className="flex items-start gap-2" style={{ marginTop: 10, background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 11px", fontSize: 11.5, color: C.ink, lineHeight: 1.45 }}>
+                <PauseCircle size={13} color={C.amber} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>Aucun lot de cette campagne ne distribue, quel que soit son propre interrupteur. Les réglages de chaque lot sont conservés et reprennent au rallumage.</span>
+              </div>
+            )}
             {current.description && <p style={{ fontSize: 12.5, color: C.muted, marginTop: 3 }}>{current.description}</p>}
             <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 4 }}>
               Renommer une campagne n'a aucun effet sur la distribution : chaque lot reste rattaché par identifiant, pas par nom.
@@ -4090,10 +4136,17 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                     const addingCible = addingCibleLotId === l.id;
                     const newCibleOptions = newCibleType === "agent" ? agents : groupes;
                     return (
-                      <div key={l.id} style={{ padding: "10px 12px", background: confirming ? C.redSoft : C.canvas, borderRadius: 8 }}>
+                      <div key={l.id} style={{ padding: "10px 12px", background: confirming ? C.redSoft : C.canvas, borderRadius: 8, opacity: (l.actif === false || current.actif === false) ? 0.72 : 1 }}>
                         <div className="flex items-center justify-between">
                           <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 5 }}>{l.nom}</div>
+                            <div className="flex items-center gap-2" style={{ marginBottom: 5 }}>
+                              <span style={{ fontSize: 12.5, fontWeight: 600 }}>{l.nom}</span>
+                              {(l.actif === false || current.actif === false) && (
+                                <span className="flex items-center gap-1" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 999, padding: "1px 8px", fontSize: 10, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                  <PauseCircle size={10} /> {l.actif === false ? "Arrêté" : "Campagne arrêtée"}
+                                </span>
+                              )}
+                            </div>
                             <div className="flex flex-wrap items-center gap-1.5">
                               {cibles.length === 0 ? (
                                 <span style={{ fontSize: 11, color: C.mutedSoft, fontStyle: "italic" }}>Aucune cible — personne ne recevra ces fiches</span>
@@ -4118,6 +4171,11 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                             </span>
                             {!confirming && !addingCible && (
                               <>
+                                <button onClick={() => toggleLotActif(l)} disabled={togglingLotId === l.id}
+                                  title={l.actif === false ? "Relancer la distribution de ce lot" : "Arrêter la distribution de ce lot"}
+                                  style={{ position: "relative", width: 34, height: 19, borderRadius: 999, border: "none", padding: 0, flexShrink: 0, background: l.actif === false ? C.border : C.green, transition: "background 0.15s" }}>
+                                  <span style={{ position: "absolute", top: 2, left: l.actif === false ? 2 : 17, width: 15, height: 15, borderRadius: 999, background: "#fff", transition: "left 0.15s" }} />
+                                </button>
                                 <button onClick={() => startAddCible(l)} title="Ajouter une cible (agent/groupe)"
                                   style={{ background: "none", border: "none", padding: 4 }}>
                                   <Plus size={13} color={C.mutedSoft} />
