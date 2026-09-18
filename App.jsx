@@ -145,32 +145,116 @@ function normKey(s) {
     .replace(/[^a-z0-9]/g, "") // retire espaces, tirets, apostrophes, parenthèses… tout sauf lettres/chiffres
     .trim();
 }
-function pickField(row, candidates) {
-  const keys = Object.keys(row);
-  for (const cand of candidates) { const hit = keys.find((k) => normKey(k) === cand); if (hit) return row[hit]; }
-  for (const cand of candidates) { const hit = keys.find((k) => normKey(k).includes(cand)); if (hit) return row[hit]; }
-  return "";
+// Les colonnes que l'import sait reconnaitre seul. Une seule table sert a la
+// fois au mappage du fichier et a l'affichage de la fiche : ajouter un champ
+// ici le rend disponible des deux cotes.
+const CHAMPS_IMPORT = [
+  { cle: "numero_box", libelle: "Numéro de box", candidats: ["numerobox", "numerodebox", "box"], icon: Hash, mono: true },
+  { cle: "nom", libelle: "Nom", candidats: ["nom", "name", "client", "nomclient", "fullname"], icon: UserCircle2 },
+  { cle: "telephone", libelle: "Numéro de contact 1", candidats: ["tel", "telephone", "phone", "mobile", "contact1", "numerocontact1"], icon: Phone, mono: true },
+  { cle: "numero_mtn", libelle: "Numéro MTN", candidats: ["numeromtn", "mtn", "numeromobilemoneymtn"], icon: Phone, mono: true },
+  { cle: "segment", libelle: "Type de segment", candidats: ["segment", "typesegment", "typedesegment"], icon: CircleDot },
+  { cle: "commune", libelle: "Commune", candidats: ["commune", "ville", "quartier"], icon: Building2 },
+  { cle: "entreprise", libelle: "Entreprise", candidats: ["entreprise", "societe", "company", "organisation"], icon: Building2 },
+  { cle: "email", libelle: "Email", candidats: ["email", "mail", "courriel"], icon: Mail },
+  { cle: "note", libelle: "Note", candidats: ["note", "notes", "commentaire", "remarque"], icon: StickyNote },
+];
+
+// Champs montres a l'agent quand le lot n'a pas de configuration : l'affichage
+// historique, pour que rien ne bouge sur les lots deja importes.
+const CHAMPS_FICHE_DEFAUT = ["telephone", "numero_mtn", "segment", "commune"];
+
+// Rattache chaque colonne du fichier a un champ connu. Deux passes : les
+// correspondances exactes d'abord, les approximatives ensuite, sinon un
+// candidat large comme "tel" rafle une colonne qu'un autre champ nommait
+// exactement. Une entete deja prise n'est jamais reattribuee.
+function resoudreEntetes(entetes) {
+  const parCle = {};
+  const pris = new Set();
+  for (const exact of [true, false]) {
+    for (const champ of CHAMPS_IMPORT) {
+      if (parCle[champ.cle]) continue;
+      const hit = entetes.find((e) => !pris.has(e) && champ.candidats.some((c) => (exact ? normKey(e) === c : normKey(e).includes(c))));
+      if (hit) { parCle[champ.cle] = hit; pris.add(hit); }
+    }
+  }
+  return { parCle, extras: entetes.filter((e) => !pris.has(e)) };
 }
-function pickFieldStr(row, candidates) {
-  const v = pickField(row, candidates);
+
+// Entetes reellement exploitables : on ecarte les colonnes sans nom (xlsx les
+// appelle __EMPTY) et celles qui sont vides sur tout l'echantillon.
+function entetesUtiles(lignes) {
+  const echantillon = lignes.slice(0, 200);
+  return [...new Set(echantillon.flatMap((r) => Object.keys(r)))]
+    .filter((e) => e && !/^__EMPTY/.test(e))
+    .filter((e) => echantillon.some((r) => String(r[e] ?? "").trim() !== ""));
+}
+
+// Cle courte et stable pour ranger une colonne libre dans clients.donnees.
+function slugChamp(entete, prises) {
+  const base = normKey(entete).slice(0, 40) || "champ";
+  let s = base, i = 2;
+  while (prises.has(s)) s = `${base}${i++}`;
+  prises.add(s);
+  return s;
+}
+
+// Intitule lisible propose a partir de l'entete du fichier : les underscores
+// deviennent des espaces et un entete tout en majuscules est ramene en
+// minuscules. L'admin peut de toute facon le corriger avant d'importer.
+function libelleDepuisEntete(entete) {
+  const t = String(entete).replace(/_+/g, " ").replace(/\s+/g, " ").trim();
+  if (!t) return "Champ";
+  const lettres = t.replace(/[^A-Za-zÀ-ÿ]/g, "");
+  const base = lettres.length > 2 && lettres === lettres.toUpperCase() ? t.toLowerCase() : t;
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+function valeurCellule(row, entete) {
+  if (!entete) return null;
+  const v = row[entete];
   return v === null || v === undefined || String(v).trim() === "" ? null : String(v).trim();
 }
-function rowsToClients(rows, lotId) {
-  return rows
-    .filter((r) => Object.values(r).some((v) => String(v || "").trim() !== ""))
-    .map((r) => ({
-      numero_box: pickFieldStr(r, ["numerobox", "numerodebox", "box"]),
-      nom: pickFieldStr(r, ["nom", "name", "client", "nomclient", "fullname"]) || "Sans nom",
-      entreprise: pickFieldStr(r, ["entreprise", "societe", "company", "organisation"]),
-      telephone: pickFieldStr(r, ["tel", "telephone", "phone", "mobile", "contact1", "numerocontact1"]),
-      numero_mtn: pickFieldStr(r, ["numeromtn", "mtn", "numeromobilemoneymtn"]),
-      segment: pickFieldStr(r, ["segment", "typesegment", "typedesegment"]),
-      commune: pickFieldStr(r, ["commune", "ville", "quartier"]),
-      email: pickFieldStr(r, ["email", "mail", "courriel"]),
-      note: pickFieldStr(r, ["note", "notes", "commentaire", "remarque"]),
+
+function rowsToClients(rows, lotId, parCle, extras) {
+  return rows.map((r) => {
+    const donnees = {};
+    for (const ex of extras) {
+      const v = valeurCellule(r, ex.entete);
+      if (v !== null) donnees[ex.slug] = v;
+    }
+    return {
+      numero_box: valeurCellule(r, parCle.numero_box),
+      nom: valeurCellule(r, parCle.nom) || "Sans nom",
+      entreprise: valeurCellule(r, parCle.entreprise),
+      telephone: valeurCellule(r, parCle.telephone),
+      numero_mtn: valeurCellule(r, parCle.numero_mtn),
+      segment: valeurCellule(r, parCle.segment),
+      commune: valeurCellule(r, parCle.commune),
+      email: valeurCellule(r, parCle.email),
+      note: valeurCellule(r, parCle.note),
+      donnees: Object.keys(donnees).length > 0 ? donnees : null,
       lot_id: lotId || null,
-    }));
+    };
+  });
 }
+
+// Lecture d'un champ de fiche, qu'il vienne d'une colonne historique ou d'une
+// cle rangee dans clients.donnees.
+function valeurChampFiche(fiche, cle) {
+  if (!cle) return null;
+  if (cle.startsWith("donnees.")) return fiche?.donnees?.[cle.slice(8)] ?? null;
+  return fiche?.[cle] ?? null;
+}
+function champsFicheAAfficher(config) {
+  if (Array.isArray(config) && config.length > 0) return config;
+  return CHAMPS_FICHE_DEFAUT.map((cle) => ({ cle, libelle: CHAMPS_IMPORT.find((c) => c.cle === cle).libelle }));
+}
+function styleChampFiche(cle) {
+  const std = CHAMPS_IMPORT.find((c) => c.cle === cle);
+  return { icon: std?.icon || StickyNote, mono: !!std?.mono };
+}
+
 // Forme canonique d'un numéro (box ou téléphone) pour la déduplication : chiffres
 // seuls, zéro initial ignoré — un même numéro importé une fois avec et une fois
 // sans son 0 initial (lecture Excel en nombre plutôt qu'en texte, par exemple) ne
@@ -883,7 +967,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   const loadOrphelines = useCallback(async () => {
     try {
       const rows = await supaRest(
-        `clients?select=id,nom,telephone,numero_fiche,numero_box,recuperee_le&statut=eq.en_cours&agent_id=eq.${agentId}&order=recuperee_le.asc.nullsfirst`,
+        `clients?select=*&statut=eq.en_cours&agent_id=eq.${agentId}&order=recuperee_le.asc.nullsfirst`,
         { accessToken }
       );
       setOrphelines(rows);
@@ -897,8 +981,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   async function loadCampagneInfo(lotId) {
     if (!lotId) { setCampagneInfo(null); return; }
     try {
-      const [row] = await supaRest(`lots?select=nom,campagnes(nom,script_prise_en_charge)&id=eq.${lotId}`, { accessToken });
-      setCampagneInfo(row?.campagnes ? { nom: row.campagnes.nom, script: row.campagnes.script_prise_en_charge } : null);
+      const [row] = await supaRest(`lots?select=nom,champs_affiches,campagnes(nom,script_prise_en_charge)&id=eq.${lotId}`, { accessToken });
+      setCampagneInfo(row ? { nom: row.campagnes?.nom, script: row.campagnes?.script_prise_en_charge, champs: row.champs_affiches } : null);
     } catch { setCampagneInfo(null); }
   }
 
@@ -1186,10 +1270,10 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
               <h2 className="disp" style={{ fontSize: 19, fontWeight: 700 }}>{fiche.nom}</h2>
               <div style={{ height: 1, background: C.borderSoft, margin: "16px 0" }} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <FicheField label="Numéro de contact 1" value={fiche.telephone} icon={Phone} mono />
-                <FicheField label="Numéro MTN" value={fiche.numero_mtn} icon={Phone} mono />
-                <FicheField label="Type de segment" value={fiche.segment} icon={CircleDot} />
-                <FicheField label="Commune" value={fiche.commune} icon={Building2} />
+                {champsFicheAAfficher(campagneInfo?.champs).map((ch) => {
+                  const { icon, mono } = styleChampFiche(ch.cle);
+                  return <FicheField key={ch.cle} label={ch.libelle} value={valeurChampFiche(fiche, ch.cle)} icon={icon} mono={mono} />;
+                })}
               </div>
             </div>
           </div>
@@ -3401,6 +3485,10 @@ function ImportPanel({ accessToken, bump }) {
   const [campagneId, setCampagneId] = useState("");
   const [lotId, setLotId] = useState("");
 
+  // Fichier lu, en attente du choix des champs a montrer a l'agent.
+  const [apercu, setApercu] = useState(null);
+  const [champs, setChamps] = useState([]);
+
   const [showNewCampagne, setShowNewCampagne] = useState(false);
   const [newCampagneNom, setNewCampagneNom] = useState("");
   const [creatingCampagne, setCreatingCampagne] = useState(false);
@@ -3466,9 +3554,41 @@ function ImportPanel({ accessToken, bump }) {
     } catch (e) { setError(e.message); } finally { setCreatingLot(false); }
   }
 
-  async function finalizeImport(rows, fileName) {
+  // Lecture du fichier : on ne touche a rien en base, on propose seulement ce
+  // que l'agent verra. Les colonnes inconnues d'Aureo sont cochees par defaut,
+  // pour qu'un import ne perde jamais silencieusement une information.
+  function preparerApercu(rows, fileName) {
+    const lignes = rows.filter((r) => Object.values(r).some((v) => String(v ?? "").trim() !== ""));
+    if (lignes.length === 0) { setError("Aucune ligne exploitable trouvée dans ce fichier."); return; }
+    const entetes = entetesUtiles(lignes);
+    const { parCle, extras } = resoudreEntetes(entetes);
+    const exemple = (entete) => {
+      const ligne = lignes.slice(0, 200).find((r) => String(r[entete] ?? "").trim() !== "");
+      const v = ligne ? String(ligne[entete]).trim() : "";
+      return v.length > 28 ? v.slice(0, 28) + "…" : v;
+    };
+
+    const liste = [];
+    for (const champ of CHAMPS_IMPORT) {
+      // nom et numero de box tiennent l'en-tete de la fiche : ils y restent.
+      if (champ.cle === "nom" || champ.cle === "numero_box" || !parCle[champ.cle]) continue;
+      liste.push({ cle: champ.cle, entete: parCle[champ.cle], libelle: champ.libelle, exemple: exemple(parCle[champ.cle]), coche: CHAMPS_FICHE_DEFAUT.includes(champ.cle), standard: true });
+    }
+    const prises = new Set();
+    for (const e of extras) {
+      const slug = slugChamp(e, prises);
+      liste.push({ cle: `donnees.${slug}`, slug, entete: e, libelle: libelleDepuisEntete(e), exemple: exemple(e), coche: true, standard: false });
+    }
+
+    setApercu({ rows: lignes, fileName, parCle });
+    setChamps(liste);
+    setSummary(null); setError(null);
+  }
+
+  async function finalizeImport(rows, fileName, parCle, choisis) {
     if (!lotId) { setError("Sélectionnez ou créez un lot avant d'importer. Une fiche sans lot ne sera jamais distribuée."); return; }
-    const payload = rowsToClients(rows, lotId);
+    const extrasRetenus = choisis.filter((c) => !c.standard && c.coche);
+    const payload = rowsToClients(rows, lotId, parCle, extrasRetenus);
     if (payload.length === 0) { setError("Aucune ligne exploitable trouvée dans ce fichier."); return; }
     setBusy(true);
     try {
@@ -3501,7 +3621,14 @@ function ImportPanel({ accessToken, bump }) {
       if (aInserer.length > 0) {
         await supaRest("clients", { method: "POST", accessToken, body: aInserer });
       }
-      setSummary({ fileName, count: aInserer.length, doublons });
+
+      // L'affichage est une propriete du lot, pas de l'import : les fiches
+      // deja presentes dans ce lot suivent la meme configuration.
+      const affiches = choisis.filter((c) => c.coche).map((c) => ({ cle: c.cle, libelle: c.libelle.trim() || c.entete }));
+      await supaRest(`lots?id=eq.${lotId}`, { method: "PATCH", accessToken, body: { champs_affiches: affiches } });
+
+      setSummary({ fileName, count: aInserer.length, doublons, champs: affiches.length });
+      setApercu(null); setChamps([]);
       setError(null);
       bump();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
@@ -3512,14 +3639,14 @@ function ImportPanel({ accessToken, bump }) {
     if (!lotId) { setError("Sélectionnez ou créez un lot avant d'importer."); return; }
     const ext = file.name.split(".").pop().toLowerCase();
     if (ext === "csv") {
-      Papa.parse(file, { header: true, skipEmptyLines: true, complete: (res) => finalizeImport(res.data, file.name), error: () => setError("Impossible de lire ce fichier CSV.") });
+      Papa.parse(file, { header: true, skipEmptyLines: true, complete: (res) => preparerApercu(res.data, file.name), error: () => setError("Impossible de lire ce fichier CSV.") });
     } else if (ext === "xlsx" || ext === "xls") {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
           const wb = XLSX.read(e.target.result, { type: "array" });
           const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-          finalizeImport(rows, file.name);
+          preparerApercu(rows, file.name);
         } catch { setError("Impossible de lire ce fichier Excel."); }
       };
       reader.readAsArrayBuffer(file);
@@ -3545,7 +3672,8 @@ function ImportPanel({ accessToken, bump }) {
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Import de fiches</h1>
           <p style={{ fontSize: 13, color: C.muted, marginTop: 3, maxWidth: 560 }}>
-            Colonnes reconnues automatiquement : numéro de box, nom, contact 1, numéro MTN, segment, commune, email, note.
+            Les colonnes habituelles sont reconnues seules (box, nom, contact 1, numéro MTN, segment, commune, email, note) et
+            <strong> toute autre colonne du fichier peut être ajoutée à l'écran de l'agent</strong> avant de valider l'import.
             Chaque import constitue un <strong>lot</strong>, rattaché à une campagne et attribué à un agent ou un groupe.
           </p>
         </div>
@@ -3668,18 +3796,63 @@ function ImportPanel({ accessToken, bump }) {
           </div>
 
           {/* Étape 3 — Fichier */}
-          <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }} onClick={() => lotId && inputRef.current?.click()}
-            style={{ background: C.surface, border: `2px dashed ${C.border}`, borderRadius: 14, padding: "48px 24px", textAlign: "center", cursor: lotId ? "pointer" : "not-allowed", maxWidth: 520, opacity: lotId ? 1 : 0.55 }}>
+          <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); if (!apercu) handleFile(e.dataTransfer.files[0]); }} onClick={() => lotId && !apercu && inputRef.current?.click()}
+            style={{ background: C.surface, border: `2px dashed ${C.border}`, borderRadius: 14, padding: "48px 24px", textAlign: "center", cursor: lotId && !apercu ? "pointer" : "not-allowed", maxWidth: 520, opacity: lotId && !apercu ? 1 : 0.55 }}>
             {busy ? <Loader2 size={26} className="animate-spin" style={{ margin: "0 auto 12px" }} color={C.teal} /> : <FileSpreadsheet size={26} color={C.teal} style={{ margin: "0 auto 12px" }} />}
             <div style={{ fontSize: 14, fontWeight: 600 }}>Déposez un fichier .csv ou .xlsx</div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>ou cliquez pour parcourir</div>
             <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
           </div>
 
+          {/* Étape 4 — Ce que l'agent verra sur la fiche */}
+          {apercu && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginTop: 16, maxWidth: 640 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>4 · Affichage sur l'écran de l'agent</div>
+              <p style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5, marginBottom: 14 }}>
+                <strong style={{ color: C.text }}>{apercu.rows.length.toLocaleString("fr-FR")} ligne{apercu.rows.length !== 1 ? "s" : ""}</strong> lue{apercu.rows.length !== 1 ? "s" : ""} dans « {apercu.fileName} » — rien n'est encore importé.
+                Cochez ce que l'agent doit voir pendant l'appel, et corrigez les intitulés si besoin.
+                Le nom et le numéro de box restent toujours en tête de fiche. <strong style={{ color: C.text }}>Une colonne décochée n'est pas conservée</strong> : il faudra réimporter le fichier pour la récupérer.
+              </p>
+
+              <div style={{ border: `1px solid ${C.borderSoft}`, borderRadius: 9, overflow: "hidden" }}>
+                {champs.map((ch, i) => (
+                  <div key={ch.cle} className="flex items-center gap-3"
+                    style={{ padding: "9px 12px", borderTop: i === 0 ? "none" : `1px solid ${C.borderSoft}`, background: ch.coche ? C.surface : C.canvas }}>
+                    <input type="checkbox" checked={ch.coche} style={{ flexShrink: 0, width: 15, height: 15, accentColor: C.amber }}
+                      onChange={(e) => { const v = e.target.checked; setChamps((l) => l.map((c) => (c.cle === ch.cle ? { ...c, coche: v } : c))); }} />
+                    <input value={ch.libelle} disabled={!ch.coche} placeholder={ch.entete}
+                      onChange={(e) => { const v = e.target.value; setChamps((l) => l.map((c) => (c.cle === ch.cle ? { ...c, libelle: v } : c))); }}
+                      style={{ width: 190, flexShrink: 0, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", fontSize: 12.5, fontWeight: 500, background: ch.coche ? C.surface : "transparent", color: ch.coche ? C.text : C.mutedSoft }} />
+                    <div style={{ minWidth: 0, flex: 1, opacity: ch.coche ? 1 : 0.5 }}>
+                      <div className="mono" style={{ fontSize: 10.5, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.02em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ch.entete}</div>
+                      <div style={{ fontSize: 11.5, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ch.exemple || "—"}</div>
+                    </div>
+                    {!ch.standard && (
+                      <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 600, color: C.teal, background: C.tealSoft, borderRadius: 999, padding: "2px 8px" }}>nouvelle colonne</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2" style={{ marginTop: 14 }}>
+                <button onClick={() => finalizeImport(apercu.rows, apercu.fileName, apercu.parCle, champs)} disabled={busy}
+                  style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}>
+                  {busy ? <Loader2 size={12} className="animate-spin" /> : <Upload size={13} />}
+                  Importer {apercu.rows.length.toLocaleString("fr-FR")} fiche{apercu.rows.length !== 1 ? "s" : ""}
+                </button>
+                <button onClick={() => { setApercu(null); setChamps([]); }} disabled={busy}
+                  style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, fontWeight: 600, color: C.muted }}>
+                  Annuler
+                </button>
+                <span style={{ fontSize: 11.5, color: C.mutedSoft }}>{champs.filter((c) => c.coche).length} champ{champs.filter((c) => c.coche).length !== 1 ? "s" : ""} affiché{champs.filter((c) => c.coche).length !== 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          )}
+
           {summary && (
             <div className="flex flex-col gap-1.5 mt-4" style={{ maxWidth: 520 }}>
               <div className="flex items-center gap-2" style={{ background: C.greenSoft, color: C.green, borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 500 }}>
-                <CheckCircle2 size={15} /> {summary.count} fiche(s) importée(s) depuis « {summary.fileName} ».
+                <CheckCircle2 size={15} /> {summary.count} fiche(s) importée(s) depuis « {summary.fileName} » — {summary.champs} champ(s) affiché(s) sur la fiche agent.
               </div>
               {summary.doublons > 0 && (
                 <div className="flex items-center gap-2" style={{ background: C.amberSoft, color: C.ink, borderRadius: 9, padding: "10px 14px", fontSize: 12.5 }}>
