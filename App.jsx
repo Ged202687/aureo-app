@@ -3324,7 +3324,7 @@ function Queue({ accessToken, refreshFlag, bump }) {
 
   const load = useCallback(async () => {
     try {
-      const rows = await supaRest("clients?select=*&order=created_at.desc&limit=100", { accessToken });
+      const rows = await supaRest("clients?select=*,lots(nom,campagnes(nom))&order=created_at.desc&limit=100", { accessToken });
       setClients(rows);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
@@ -3352,7 +3352,7 @@ function Queue({ accessToken, refreshFlag, bump }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
             <tr style={{ background: C.canvas, textAlign: "left" }}>
-              {["N°", "Client", "Statut", "Échéance"].map((h) => (
+              {["N°", "Client", "Campagne", "Statut", "Échéance"].map((h) => (
                 <th key={h} style={{ padding: "10px 16px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em" }}>{h}</th>
               ))}
             </tr>
@@ -3365,6 +3365,10 @@ function Queue({ accessToken, refreshFlag, bump }) {
                 <tr key={c.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
                   <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.numero_fiche}</td>
                   <td style={{ padding: "10px 16px", fontWeight: 500 }}>{c.nom}</td>
+                  <td style={{ padding: "10px 16px", color: C.muted }}>
+                    <div>{c.lots?.campagnes?.nom || "—"}</div>
+                    {c.lots?.nom && <div style={{ color: C.mutedSoft, fontSize: 11, marginTop: 1 }}>{c.lots.nom}</div>}
+                  </td>
                   <td style={{ padding: "10px 16px" }}>
                     <span style={{ background: meta.soft, color: meta.color, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
                   </td>
