@@ -3657,12 +3657,45 @@ function ImportPanel({ accessToken, bump }) {
 
   const cibleOptions = newLotCibleType === "agent" ? (agents || []) : (groupes || []);
 
+  // Le modele se deduit de CHAMPS_IMPORT : ajouter une colonne reconnue dans le
+  // code la fait apparaitre ici, sans risque de decalage entre les deux.
+  // Les deux dernieres colonnes sont la pour montrer qu'on peut en ajouter
+  // d'autres ; laissees vides, elles seront simplement ignorees a l'import.
   function downloadTemplate() {
-    const headers = ["Numéro de box", "Nom", "Numéro de contact 1", "Numéro MTN", "Type de segment", "Commune", "Email", "Note"];
+    const reconnues = CHAMPS_IMPORT.map((c) => c.libelle);
+    const libres = ["Offre actuelle", "Date d'échéance"];
+    const headers = [...reconnues, ...libres];
+
     const ws = XLSX.utils.aoa_to_sheet([headers]);
     ws["!cols"] = headers.map(() => ({ wch: 22 }));
+
+    const notice = [
+      ["Modèle d'import Auréo"],
+      [],
+      ["Colonnes reconnues automatiquement"],
+      ["Les " + reconnues.length + " premières colonnes de l'onglet « Fiches » sont identifiées seules."],
+      ["Leur ordre n'a aucune importance et les variantes d'intitulé sont acceptées (Tél, Téléphone, Contact 1…)."],
+      ["Une ligne sans nom est importée sous « Sans nom »."],
+      [],
+      ["Vos propres colonnes"],
+      ["Ajoutez autant de colonnes que nécessaire à droite des colonnes existantes :"],
+      ["offre en cours, date d'échéance, référence technique, montant, statut d'éligibilité…"],
+      ["Au moment de l'import, Auréo les détecte et vous demande lesquelles afficher sur l'écran"],
+      ["de l'agent, avec l'intitulé de votre choix. « Offre actuelle » et « Date d'échéance » en sont"],
+      ["deux exemples : renommez-les ou supprimez-les librement."],
+      [],
+      ["À savoir"],
+      ["• Une colonne vide sur toutes les lignes est ignorée."],
+      ["• Une colonne décochée au moment de l'import n'est pas conservée : il faut réimporter pour la récupérer."],
+      ["• Le nom et le numéro de box restent toujours affichés en tête de fiche."],
+      ["• L'affichage se modifie ensuite à tout moment depuis l'onglet Campagnes, lot par lot."],
+    ];
+    const wsNotice = XLSX.utils.aoa_to_sheet(notice);
+    wsNotice["!cols"] = [{ wch: 105 }];
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Fiches");
+    XLSX.utils.book_append_sheet(wb, wsNotice, "Mode d'emploi");
     XLSX.writeFile(wb, "aureo_modele_import.xlsx");
   }
 
