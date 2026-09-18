@@ -3968,6 +3968,12 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
   const [deletingLotId, setDeletingLotId] = useState(null);
   const [deleteInfo, setDeleteInfo] = useState(null);
 
+  // Edition de l'affichage agent d'un lot, sans passer par un reimport.
+  const [editChampsLotId, setEditChampsLotId] = useState(null);
+  const [editChamps, setEditChamps] = useState([]);
+  const [chargementChamps, setChargementChamps] = useState(false);
+  const [savingChamps, setSavingChamps] = useState(false);
+
   const [addingCibleLotId, setAddingCibleLotId] = useState(null);
   const [newCibleType, setNewCibleType] = useState("agent");
   const [newCibleId, setNewCibleId] = useState("");
@@ -3982,6 +3988,60 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
       setConfirmDeleteLotId(null);
       reload();
     } catch (e) { setError(e.message); } finally { setDeletingLotId(null); }
+  }
+
+  // Ouvre l'editeur sur la configuration en place, completee de tout ce qui
+  // pourrait encore etre montre : les champs standard non retenus, et les
+  // colonnes libres presentes dans les fiches du lot.
+  async function ouvrirEditeurChamps(lot) {
+    setEditChampsLotId(lot.id);
+    setConfirmDeleteLotId(null); setAddingCibleLotId(null);
+    setChargementChamps(true); setError(null);
+    setEditChamps([]);
+    try {
+      const echantillon = await supaRest(`clients?select=*&lot_id=eq.${lot.id}&limit=50`, { accessToken });
+      const modele = echantillon[0] || null;
+      const clesDonnees = [...new Set(echantillon.flatMap((c) => Object.keys(c.donnees || {})))];
+
+      const config = champsFicheAAfficher(lot.champs_affiches);
+      const liste = config.map((ch) => ({ ...ch, coche: true }));
+      const dejaLa = new Set(liste.map((ch) => ch.cle));
+
+      for (const champ of CHAMPS_IMPORT) {
+        if (champ.cle === "nom" || champ.cle === "numero_box" || dejaLa.has(champ.cle)) continue;
+        liste.push({ cle: champ.cle, libelle: champ.libelle, coche: false });
+      }
+      for (const k of clesDonnees) {
+        if (dejaLa.has(`donnees.${k}`)) continue;
+        liste.push({ cle: `donnees.${k}`, libelle: libelleDepuisEntete(k), coche: false });
+      }
+
+      setEditChamps(liste.map((ch) => ({ ...ch, exemple: modele ? valeurChampFiche(modele, ch.cle) : null })));
+    } catch (e) { setError(e.message); setEditChampsLotId(null); } finally { setChargementChamps(false); }
+  }
+
+  function deplacerChamp(index, delta) {
+    setEditChamps((l) => {
+      const cible = index + delta;
+      if (cible < 0 || cible >= l.length) return l;
+      const copie = [...l];
+      [copie[index], copie[cible]] = [copie[cible], copie[index]];
+      return copie;
+    });
+  }
+
+  // null remet l'affichage par defaut : c'est aussi l'etat des lots jamais
+  // configures, donc rien de particulier a prevoir a la lecture.
+  async function enregistrerChamps(lotId, parDefaut = false) {
+    const retenus = editChamps.filter((ch) => ch.coche);
+    if (!parDefaut && retenus.length === 0) { setError("Gardez au moins un champ visible sur la fiche."); return; }
+    setSavingChamps(true); setError(null);
+    try {
+      const valeur = parDefaut ? null : retenus.map((ch) => ({ cle: ch.cle, libelle: ch.libelle.trim() || ch.cle }));
+      await supaRest(`lots?id=eq.${lotId}`, { method: "PATCH", accessToken, body: { champs_affiches: valeur } });
+      setEditChampsLotId(null); setEditChamps([]);
+      reload();
+    } catch (e) { setError(e.message); } finally { setSavingChamps(false); }
   }
 
   function startAddCible(l) {
@@ -4346,12 +4406,16 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                             <span style={{ fontSize: 11, color: C.mutedSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
                               {nbFiches === undefined ? "…" : nbFiches === null ? "—" : `${nbFiches} fiche${nbFiches !== 1 ? "s" : ""}`}
                             </span>
-                            {!confirming && !addingCible && (
+                            {!confirming && !addingCible && editChampsLotId !== l.id && (
                               <>
                                 <button onClick={() => toggleLotActif(l)} disabled={togglingLotId === l.id}
                                   title={l.actif === false ? "Relancer la distribution de ce lot" : "Arrêter la distribution de ce lot"}
                                   style={{ position: "relative", width: 34, height: 19, borderRadius: 999, border: "none", padding: 0, flexShrink: 0, background: l.actif === false ? C.border : C.green, transition: "background 0.15s" }}>
                                   <span style={{ position: "absolute", top: 2, left: l.actif === false ? 2 : 17, width: 15, height: 15, borderRadius: 999, background: "#fff", transition: "left 0.15s" }} />
+                                </button>
+                                <button onClick={() => ouvrirEditeurChamps(l)} title="Champs affichés sur l'écran de l'agent"
+                                  style={{ background: "none", border: "none", padding: 4 }}>
+                                  <ListChecks size={13} color={editChampsLotId === l.id ? C.amber : C.mutedSoft} />
                                 </button>
                                 <button onClick={() => startAddCible(l)} title="Ajouter une cible (agent/groupe)"
                                   style={{ background: "none", border: "none", padding: 4 }}>
@@ -4365,6 +4429,70 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                             )}
                           </div>
                         </div>
+                        {editChampsLotId === l.id && (
+                          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.border}` }}>
+                            <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                              <span style={{ fontSize: 11.5, fontWeight: 700, color: C.ink }}>Affichage sur l'écran de l'agent</span>
+                              {!l.champs_affiches && <span style={{ fontSize: 10.5, color: C.mutedSoft }}>affichage par défaut</span>}
+                            </div>
+                            <p style={{ fontSize: 10.5, color: C.mutedSoft, marginBottom: 8, lineHeight: 1.45 }}>
+                              Ce qui est coché apparaît pendant l'appel, dans cet ordre. Le nom et le numéro de box restent en tête de fiche.
+                              Les colonnes proposées sont celles réellement présentes dans les fiches de ce lot.
+                            </p>
+                            {chargementChamps ? (
+                              <div className="flex items-center gap-2" style={{ fontSize: 11.5, color: C.muted, padding: "8px 0" }}>
+                                <Loader2 size={12} className="animate-spin" /> Lecture des fiches du lot…
+                              </div>
+                            ) : (
+                              <>
+                                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+                                  {editChamps.map((ch, i) => (
+                                    <div key={ch.cle} className="flex items-center gap-2"
+                                      style={{ padding: "6px 9px", borderTop: i === 0 ? "none" : `1px solid ${C.borderSoft}`, background: ch.coche ? C.surface : C.canvas }}>
+                                      <input type="checkbox" checked={ch.coche} style={{ flexShrink: 0, width: 14, height: 14, accentColor: C.amber }}
+                                        onChange={(e) => { const v = e.target.checked; setEditChamps((liste) => liste.map((c) => (c.cle === ch.cle ? { ...c, coche: v } : c))); }} />
+                                      <input value={ch.libelle} disabled={!ch.coche}
+                                        onChange={(e) => { const v = e.target.value; setEditChamps((liste) => liste.map((c) => (c.cle === ch.cle ? { ...c, libelle: v } : c))); }}
+                                        style={{ width: 165, flexShrink: 0, border: `1px solid ${C.border}`, borderRadius: 5, padding: "4px 7px", fontSize: 11.5, fontWeight: 500, background: ch.coche ? C.surface : "transparent", color: ch.coche ? C.text : C.mutedSoft }} />
+                                      <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: C.mutedSoft, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: ch.coche ? 1 : 0.6 }}>
+                                        {ch.exemple || "—"}
+                                      </span>
+                                      {ch.cle.startsWith("donnees.") && (
+                                        <span style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 600, color: C.teal, background: C.tealSoft, borderRadius: 999, padding: "1px 7px" }}>fichier</span>
+                                      )}
+                                      <div className="flex" style={{ flexShrink: 0 }}>
+                                        <button onClick={() => deplacerChamp(i, -1)} disabled={i === 0} title="Monter"
+                                          style={{ background: "none", border: "none", padding: 2, opacity: i === 0 ? 0.25 : 1 }}>
+                                          <ChevronUp size={12} color={C.muted} />
+                                        </button>
+                                        <button onClick={() => deplacerChamp(i, 1)} disabled={i === editChamps.length - 1} title="Descendre"
+                                          style={{ background: "none", border: "none", padding: 2, opacity: i === editChamps.length - 1 ? 0.25 : 1 }}>
+                                          <ChevronDown size={12} color={C.muted} />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="flex items-center gap-2" style={{ marginTop: 8 }}>
+                                  <button onClick={() => enregistrerChamps(l.id)} disabled={savingChamps}
+                                    style={{ background: C.amber, color: C.ink, border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
+                                    {savingChamps && <Loader2 size={11} className="animate-spin" />} Enregistrer
+                                  </button>
+                                  <button onClick={() => { setEditChampsLotId(null); setEditChamps([]); }} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5 }}>
+                                    Annuler
+                                  </button>
+                                  <span style={{ fontSize: 11, color: C.mutedSoft, marginLeft: "auto" }}>{editChamps.filter((c) => c.coche).length} champ(s) visible(s)</span>
+                                  {l.champs_affiches && (
+                                    <button onClick={() => enregistrerChamps(l.id, true)} disabled={savingChamps}
+                                      style={{ background: "none", border: "none", color: C.mutedSoft, fontSize: 11, textDecoration: "underline" }}>
+                                      Affichage par défaut
+                                    </button>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
                         {addingCible && (
                           <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.border}` }}>
                             <div className="flex items-center gap-2 mb-2">
