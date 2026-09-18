@@ -210,10 +210,27 @@ function libelleDepuisEntete(entete) {
   return base.charAt(0).toUpperCase() + base.slice(1);
 }
 
+// Excel ne stocke pas une date mais un nombre de jours depuis 1900 : sans
+// conversion, une echeance arrive sur l'ecran de l'agent sous la forme 46188.
+// La lecture du fichier demande desormais ces cellules en Date (cellDates), et
+// on les rend ici en jour/mois/annee, avec l'heure seulement si elle est
+// renseignee.
+function formatDateCellule(d) {
+  if (isNaN(d.getTime())) return null;
+  const jj = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const h = d.getHours(), min = d.getMinutes();
+  const jour = `${jj}/${mm}/${d.getFullYear()}`;
+  return h === 0 && min === 0 ? jour : `${jour} ${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
 function valeurCellule(row, entete) {
   if (!entete) return null;
   const v = row[entete];
-  return v === null || v === undefined || String(v).trim() === "" ? null : String(v).trim();
+  if (v === null || v === undefined) return null;
+  if (v instanceof Date) return formatDateCellule(v);
+  const s = String(v).trim();
+  return s === "" ? null : s;
 }
 
 function rowsToClients(rows, lotId, parCle, extras) {
@@ -3564,7 +3581,7 @@ function ImportPanel({ accessToken, bump }) {
     const { parCle, extras } = resoudreEntetes(entetes);
     const exemple = (entete) => {
       const ligne = lignes.slice(0, 200).find((r) => String(r[entete] ?? "").trim() !== "");
-      const v = ligne ? String(ligne[entete]).trim() : "";
+      const v = (ligne ? valeurCellule(ligne, entete) : null) || "";
       return v.length > 28 ? v.slice(0, 28) + "…" : v;
     };
 
@@ -3644,7 +3661,7 @@ function ImportPanel({ accessToken, bump }) {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
-          const wb = XLSX.read(e.target.result, { type: "array" });
+          const wb = XLSX.read(e.target.result, { type: "array", cellDates: true });
           const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
           preparerApercu(rows, file.name);
         } catch { setError("Impossible de lire ce fichier Excel."); }
