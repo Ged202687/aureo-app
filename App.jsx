@@ -182,6 +182,13 @@ const CHAMPS_IMPORT = [
 // historique, pour que rien ne bouge sur les lots deja importes.
 const CHAMPS_FICHE_DEFAUT = ["telephone", "numero_mtn", "segment", "commune"];
 
+// Un rappel echu reste reserve a l'agent qui l'a pose pendant ce delai : c'est
+// lui que le client connait, et la file ne sert de toute facon un rappel qu'a
+// son auteur. Passe ce delai, la fiche redevient accessible par la recherche a
+// n'importe quel agent, pour qu'un rendez-vous ne soit pas perdu si son auteur
+// est absent.
+const RESERVE_RAPPEL_ECHU_MS = 12 * 3600 * 1000;
+
 // Rattache chaque colonne du fichier a un champ connu. Deux passes : les
 // correspondances exactes d'abord, les approximatives ensuite, sinon un
 // candidat large comme "tel" rafle une colonne qu'un autre champ nommait
@@ -1640,7 +1647,11 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduct
       // (Injoignable, Pas disponible, etc. — simple délai de réouverture automatique)
       // restent trouvables normalement, quel que soit le champ utilisé pour les retrouver.
       const maintenant = Date.now();
-      const candidats = rows.filter((r) => r.statut === "planifie" && r.visible_apres && new Date(r.visible_apres).getTime() > maintenant);
+      // On examine aussi les rappels echus depuis moins de 12 heures : ils
+      // restent reserves a leur auteur (le tri se fait juste en dessous, les
+      // autres qualifications echues ne sont jamais verrouillees).
+      const candidats = rows.filter((r) => r.statut === "planifie" && r.visible_apres
+        && new Date(r.visible_apres).getTime() > maintenant - RESERVE_RAPPEL_ECHU_MS);
       let verrouillees = [];
       if (candidats.length > 0) {
         const historique = await supaRest(
@@ -1654,11 +1665,17 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduct
             const derniere = derniereParClient.get(r.id);
             const estRappel = derniere?.types_qualification?.categorie === "À rappeler";
             const estRechargementValide = derniere?.types_qualification?.categorie === "Positif" && derniere?.types_qualification?.motif === "Rechargement validé";
+            const echeance = new Date(r.visible_apres).getTime();
             // Un client avance parfois son rendez-vous : l'agent qui a posé le
             // rappel doit pouvoir le rouvrir avant l'échéance. Les autres non.
             if (estRappel && derniere.agent_id === agentId) return null;
-            if (!estRappel && !estRechargementValide) return null;
-            return { ...r, validationDate: estRechargementValide ? derniere.created_at : null };
+            // Pour les autres agents, le rappel reste fermé jusqu'à l'échéance,
+            // puis 12 heures de plus : le temps que son auteur le rappelle.
+            if (estRappel) return { ...r, validationDate: null, reserveJusqua: echeance + RESERVE_RAPPEL_ECHU_MS };
+            // Tout le reste : une fois l'échéance passée, plus aucun verrou.
+            if (echeance <= maintenant) return null;
+            if (!estRechargementValide) return null;
+            return { ...r, validationDate: derniere.created_at, reserveJusqua: null };
           })
           .filter(Boolean);
       }
@@ -1715,7 +1732,9 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduct
                   <AlertTriangle size={15} />
                   {c.validationDate
                     ? `Cette box (${c.numero_box || c.nom}) a déjà été validée le ${new Date(c.validationDate).toLocaleDateString("fr-FR")} — verrouillée 30 jours.`
-                    : `Cette fiche (${c.numero_box || c.nom}) est programmée pour un rappel — disponible à partir du ${new Date(c.visible_apres).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}.`}
+                    : new Date(c.visible_apres).getTime() <= Date.now()
+                      ? `Cette fiche (${c.numero_box || c.nom}) est un rappel réservé à l'agent qui l'a posé — accessible à tous à partir du ${new Date(c.reserveJusqua).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}.`
+                      : `Cette fiche (${c.numero_box || c.nom}) est programmée pour un rappel — disponible à partir du ${new Date(c.visible_apres).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}.`}
                 </div>
               ))}
             </div>
