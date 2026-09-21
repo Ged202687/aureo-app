@@ -58,6 +58,24 @@ async function supaRest(path, { method = "GET", accessToken, body } = {}) {
   return data;
 }
 
+// Nombre de lignes correspondant a une requete, sans ramener les lignes : la
+// reponse n'a pas de corps, le total arrive dans l'en-tete Content-Range. Sert
+// aux compteurs rafraichis en boucle, ou la liste elle-meme n'est pas affichee.
+async function supaCount(path, accessToken) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: "HEAD",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      Prefer: "count=exact",
+      Range: "0-0",
+    },
+  });
+  if (!res.ok) throw new Error("Erreur Supabase");
+  const total = (res.headers.get("content-range") || "").split("/")[1];
+  return total && total !== "*" ? Number(total) : 0;
+}
+
 // Découpe une requête "id=in.(...)" en plusieurs lots, pour éviter de générer
 // une URL trop longue (rejetée par Cloudflare en amont de Supabase) quand la
 // liste d'identifiants est potentiellement grande (export sur une longue période).
@@ -929,13 +947,21 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     return () => clearInterval(t);
   }, []);
 
+  // Les types de pause ne changent jamais en cours de journee : les relire
+  // toutes les 30 secondes, pour chaque agent connecte, ne servait qu'a
+  // consommer de la bande passante. Ils sont donc lus une fois par session.
+  const pauseTypesRef = useRef(null);
+
   const loadMyPresence = useCallback(async () => {
     try {
       const todayStr = new Date().toISOString().slice(0, 10);
       const startOfDay = new Date(todayStr + "T00:00:00");
-      const [tempsRows, pauseTypes, pauseDetails] = await Promise.all([
+      if (!pauseTypesRef.current) {
+        pauseTypesRef.current = await supaRest("pause_types?select=*&actif=eq.true&order=ordre.asc", { accessToken });
+      }
+      const pauseTypes = pauseTypesRef.current;
+      const [tempsRows, pauseDetails] = await Promise.all([
         supaRest(`vue_temps_agent_jour?select=statut,secondes&agent_id=eq.${agentId}&jour=eq.${todayStr}`, { accessToken }),
-        supaRest("pause_types?select=*&actif=eq.true&order=ordre.asc", { accessToken }),
         supaRest(`pause_details?select=pause_type_id,debut,fin&agent_id=eq.${agentId}&debut=gte.${startOfDay.toISOString()}`, { accessToken }),
       ]);
       const enProd = tempsRows.find((t) => t.statut === "en_prod")?.secondes || 0;
@@ -1420,10 +1446,30 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
 function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
   const [rappels, setRappels] = useState(null);
+  const [nbRappels, setNbRappels] = useState(null);
   const [error, setError] = useState(null);
   const [showTraitees, setShowTraitees] = useState(false);
   const [showRappels, setShowRappels] = useState(false);
   const [traitees, setTraitees] = useState(null);
+
+  // Bornes de la semaine en cours, communes au compteur et a la liste.
+  const filtreSemaine = useCallback(() => {
+    const now = new Date();
+    const jour = (now.getDay() + 6) % 7; // lundi = 0
+    const debut = new Date(now.getFullYear(), now.getMonth(), now.getDate() - jour);
+    const fin = new Date(debut.getTime() + 7 * 24 * 3600 * 1000);
+    return `statut=eq.planifie&agent_id=eq.${agentId}&types_qualification.categorie=eq.${encodeURIComponent("À rappeler")}&visible_apres=gte.${debut.toISOString()}&visible_apres=lt.${fin.toISOString()}`;
+  }, [agentId]);
+
+  // Panneau ferme : seul le nombre est affiche, on ne ramene donc que lui.
+  // La liste complete d'un agent charge pesait 37 ko, relus toutes les 30
+  // secondes pour alimenter un compteur entre parentheses.
+  const loadNbRappels = useCallback(async () => {
+    try {
+      const n = await supaCount(`clients?select=id,types_qualification!inner(categorie)&${filtreSemaine()}`, accessToken);
+      setNbRappels(n);
+    } catch (e) { setError(e.message); }
+  }, [accessToken, filtreSemaine]);
 
   const loadRappels = useCallback(async () => {
     try {
@@ -1440,10 +1486,19 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
         { accessToken }
       );
       setRappels(rows);
+      setNbRappels(rows.length);
     } catch (e) { setError(e.message); }
   }, [accessToken, agentId]);
 
-  useEffect(() => { loadRappels(); const t = setInterval(loadRappels, 30000); return () => clearInterval(t); }, [loadRappels]);
+  // Liste ouverte : on la tient a jour. Fermee : le compteur seul suffit.
+  // Une minute au lieu de trente secondes : un rappel se declenche a l'heure
+  // pres, pas a la demi-minute, et une qualification rafraichit deja tout de
+  // suite via refreshTrigger.
+  const rafraichirRappels = useCallback(async () => {
+    if (showRappels) await loadRappels(); else await loadNbRappels();
+  }, [showRappels, loadRappels, loadNbRappels]);
+
+  useEffect(() => { rafraichirRappels(); const t = setInterval(rafraichirRappels, 60000); return () => clearInterval(t); }, [rafraichirRappels]);
   // Rafraîchissement immédiat dès qu'une qualification vient d'être validée
   // (sans attendre le prochain cycle de 30s) — évite qu'un rappel tout juste
   // traité reste visible dans la liste pendant jusqu'à 30 secondes.
@@ -1452,8 +1507,8 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
   // pleinement visible côté base.
   useEffect(() => {
     if (!refreshTrigger) return;
-    loadRappels();
-    const t = setTimeout(loadRappels, 1500);
+    rafraichirRappels();
+    const t = setTimeout(rafraichirRappels, 1500);
     return () => clearTimeout(t);
   }, [refreshTrigger]); // eslint-disable-line
 
@@ -1497,7 +1552,7 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
         <button onClick={() => setShowRappels((v) => !v)} className="flex items-center justify-between" style={{ width: "100%", padding: "13px 16px", background: "none", border: "none", cursor: "pointer" }}>
           <span className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
-            <BellRing size={13} color={C.amber} /> Rappels de la semaine{rappels && rappels.length > 0 ? ` (${rappels.length})` : ""}
+            <BellRing size={13} color={C.amber} /> Rappels de la semaine{nbRappels > 0 ? ` (${nbRappels})` : ""}
           </span>
           {showRappels ? <ChevronUp size={14} color={C.mutedSoft} /> : <ChevronDown size={14} color={C.mutedSoft} />}
         </button>
@@ -3425,13 +3480,17 @@ function Queue({ accessToken, refreshFlag, bump }) {
 
   const load = useCallback(async () => {
     try {
-      const rows = await supaRest("clients?select=*,lots(nom,campagnes(nom))&order=created_at.desc&limit=100", { accessToken });
+      // Seules les colonnes affichees : la fiche entiere pesait 77 ko par
+      // cycle, pour six valeurs a l'ecran.
+      const rows = await supaRest("clients?select=id,numero_fiche,nom,statut,visible_apres,lots(nom,campagnes(nom))&order=created_at.desc&limit=100", { accessToken });
       setClients(rows);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
 
   useEffect(() => { load(); }, [load, refreshFlag]);
-  useEffect(() => { const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+  // Une minute : le decompte affiche se met a jour chaque seconde sans rien
+  // demander au serveur, seule la composition de la file a besoin d'etre relue.
+  useEffect(() => { const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);
   useEffect(() => { const t = setInterval(() => forceTick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
 
   if (error) return <ErrorBlock message={error} />;
