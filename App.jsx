@@ -7,7 +7,7 @@ import {
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award, TrendingUp,
-  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart,
+  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -189,6 +189,38 @@ const COULEURS_QUALIFICATION = [
 
 // Style d'une categorie : ce que le super admin a choisi d'abord, sinon les
 // valeurs historiques codees en dur, sinon le style neutre.
+// On n'ouvre que du http/https : une adresse "javascript:" ou "data:" saisie
+// par erreur — ou par malveillance — ne doit jamais etre suivie.
+function lienValide(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(String(url).trim());
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
+  } catch { return null; }
+}
+
+// Variables de l'adresse : {numero_box}, {numero_fiche}, {nom}, {telephone},
+// {numero_mtn}, {segment}, {commune}, et toute colonne libre de l'import via
+// {donnees.ma_colonne}. Les valeurs sont encodees, une valeur absente laisse
+// la place vide.
+const VARIABLES_LIEN = ["numero_box", "numero_fiche", "nom", "telephone", "numero_mtn", "segment", "commune"];
+
+function appliquerVariables(url, fiche) {
+  if (!url) return url;
+  return String(url).replace(/\{([\w.]+)\}/g, (_, cle) => {
+    const v = fiche ? valeurChampFiche(fiche, cle) : null;
+    return v === null || v === undefined ? "" : encodeURIComponent(String(v));
+  });
+}
+
+// Les variables sont remplacees d'abord, la validation porte sur l'adresse
+// reellement ouverte : new URL() reencoderait sinon les accolades en %7B et
+// la substitution ne trouverait plus rien.
+function ouvrirLien(url, fiche) {
+  const sur = lienValide(appliquerVariables(url, fiche));
+  if (sur) window.open(sur, "_blank", "noopener,noreferrer");
+}
+
 function styleCategorie(categorie, icone, couleur) {
   const base = CATEGORY_STYLE[categorie] || FALLBACK_STYLE;
   const choisie = ICONES_QUALIFICATION.find((i) => i.cle === icone);
@@ -802,8 +834,9 @@ function Workspace({ session, onLogout, onProfilChange }) {
           // icone et couleur appartiennent a la categorie : la premiere ligne
           // qui en porte une fait foi pour toute la categorie.
           const source = rows.find((x) => x.categorie === r.categorie && (x.icone || x.couleur)) || r;
+          const avecLien = rows.find((x) => x.categorie === r.categorie && x.lien);
           const style = styleCategorie(r.categorie, source.icone, source.couleur);
-          cat = { categorie: r.categorie, ...style, subs: [] };
+          cat = { categorie: r.categorie, ...style, lien: avecLien ? avecLien.lien : null, subs: [] };
           byCat.push(cat);
         }
         cat.subs.push(r);
@@ -1401,6 +1434,9 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
                     setCat(c.categorie);
                     setSub(null);
                     setRappelDate(""); setRappelHeure(""); setDateValidation("");
+                    // Ouverture depuis le clic lui-meme : c'est un geste de
+                    // l'utilisateur, le navigateur ne la bloque donc pas.
+                    ouvrirLien(c.lien, fiche);
                   }}
                     style={{ background: isActive ? c.soft : C.surface, border: `1.5px solid ${isActive ? c.color : C.border}`, borderRadius: 10, padding: "14px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     <Icon size={18} color={c.color} />
@@ -1412,7 +1448,16 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
 
             {cat && (
               <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px dashed ${C.border}` }}>
-                <div className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: C.mutedSoft }}><ArrowRight size={12} /> Motif précis</div>
+                <div className="flex items-center justify-between mb-3">
+                <span className="flex items-center gap-1.5" style={{ fontSize: 11.5, color: C.mutedSoft }}><ArrowRight size={12} /> Motif précis</span>
+                {lienValide(tree.find((t) => t.categorie === cat)?.lien) && (
+                  <button type="button" onClick={() => ouvrirLien(tree.find((t) => t.categorie === cat).lien, fiche)}
+                    className="flex items-center gap-1.5"
+                    style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, color: C.text }}>
+                    <ExternalLink size={12} color={C.teal} /> Rouvrir l'outil
+                  </button>
+                )}
+              </div>
                 <div className="flex flex-wrap gap-2">
                   {tree.find((t) => t.categorie === cat).subs.map((s) => {
                     const isActive = sub === s.id;
@@ -5959,6 +6004,9 @@ function Rules({ accessToken, tree, reload }) {
 }
 
 function RuleCard({ cat, onUpdate, onDelete, onAdd, onApparence, apparenceOuverte, onToggleApparence }) {
+  const [lienSaisi, setLienSaisi] = useState(cat.lien || "");
+  const lienChange = (lienSaisi.trim() || null) !== (cat.lien || null);
+  const lienRefuse = lienSaisi.trim() !== "" && !lienValide(lienSaisi);
   const [newLabel, setNewLabel] = useState("");
   const [newDelay, setNewDelay] = useState(24);
   const [newTerminal, setNewTerminal] = useState(false);
@@ -6013,6 +6061,30 @@ function RuleCard({ cat, onUpdate, onDelete, onAdd, onApparence, apparenceOuvert
           <p style={{ fontSize: 10.5, color: C.mutedSoft, marginTop: 9, lineHeight: 1.45 }}>
             S'applique partout où la catégorie apparaît : boutons de qualification de l'agent, historique, résultats.
           </p>
+
+          <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 12 }}>
+            <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 7 }}>Outil externe</div>
+            <div className="flex items-center gap-2">
+              <input value={lienSaisi} onChange={(e) => setLienSaisi(e.target.value)} placeholder="https://… (laisser vide pour aucun)"
+                style={{ flex: 1, minWidth: 0, border: `1px solid ${lienRefuse ? C.red : C.border}`, borderRadius: 6, padding: "6px 9px", fontSize: 11.5, background: C.surface }} />
+              <button onClick={() => onApparence(cat.categorie, { lien: lienSaisi.trim() || null })} disabled={!lienChange || lienRefuse}
+                style={{ background: !lienChange || lienRefuse ? C.border : C.amber, color: C.ink, border: "none", borderRadius: 6, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, flexShrink: 0 }}>
+                Enregistrer
+              </button>
+            </div>
+            <p style={{ fontSize: 10.5, color: lienRefuse ? C.red : C.mutedSoft, marginTop: 6, lineHeight: 1.45 }}>
+              {lienRefuse
+                ? "Adresse invalide : elle doit commencer par http:// ou https://."
+                : "Quand l'agent choisit cette catégorie, cette adresse s'ouvre dans un nouvel onglet — l'outil de déclaration d'incident, par exemple. Un bouton « Rouvrir l'outil » reste ensuite affiché à côté des motifs."}
+            </p>
+            <p style={{ fontSize: 10.5, color: C.mutedSoft, marginTop: 6, lineHeight: 1.5 }}>
+              Vous pouvez insérer des valeurs de la fiche entre accolades, elles seront remplacées à l'ouverture :{" "}
+              {VARIABLES_LIEN.map((v) => <code key={v} style={{ background: C.canvas, borderRadius: 4, padding: "1px 4px", marginRight: 4, fontSize: 10 }}>{`{${v}}`}</code>)}
+              <br />
+              Exemple : <code style={{ background: C.canvas, borderRadius: 4, padding: "1px 4px", fontSize: 10 }}>https://outil/nouveau?box={"{numero_box}"}&amp;ref={"{numero_fiche}"}</code>
+              {" "}— une colonne ajoutée à l'import s'écrit <code style={{ background: C.canvas, borderRadius: 4, padding: "1px 4px", fontSize: 10 }}>{"{donnees.ma_colonne}"}</code>.
+            </p>
+          </div>
         </div>
       )}
 
