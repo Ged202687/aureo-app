@@ -7,6 +7,7 @@ import {
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award, TrendingUp,
+  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -148,6 +149,58 @@ const CATEGORY_STYLE = {
   "Négatif": { color: C.red, soft: C.redSoft, icon: XCircle },
 };
 const FALLBACK_STYLE = { color: C.mutedSoft, soft: C.borderSoft, icon: Clock };
+
+// Catalogue ferme : le super admin choisit dans cette liste, l'application
+// n'affiche jamais une icone venue de la base sans la connaitre. Le nom
+// stocke est la cle, pas le composant.
+const ICONES_QUALIFICATION = [
+  { cle: "telephone", libelle: "Téléphone", icon: Phone },
+  { cle: "appel", libelle: "Appel en cours", icon: PhoneCall },
+  { cle: "appel_manque", libelle: "Appel manqué", icon: PhoneMissed },
+  { cle: "telephone_coupe", libelle: "Téléphone raccroché", icon: PhoneOff },
+  { cle: "repondeur", libelle: "Répondeur", icon: Voicemail },
+  { cle: "message", libelle: "Message", icon: MessageSquare },
+  { cle: "valide", libelle: "Validé", icon: CheckCircle2 },
+  { cle: "refus", libelle: "Refus", icon: XCircle },
+  { cle: "pouce_haut", libelle: "Favorable", icon: ThumbsUp },
+  { cle: "pouce_bas", libelle: "Défavorable", icon: ThumbsDown },
+  { cle: "vente", libelle: "Vente", icon: ShoppingCart },
+  { cle: "etoile", libelle: "Étoile", icon: Star },
+  { cle: "horloge", libelle: "Horloge", icon: Clock },
+  { cle: "calendrier", libelle: "Rendez-vous", icon: CalendarClock },
+  { cle: "indisponible", libelle: "Indisponible", icon: Moon },
+  { cle: "interdit", libelle: "Interdit", icon: Ban },
+  { cle: "panne", libelle: "Dysfonctionnement", icon: Wrench },
+  { cle: "alerte", libelle: "Alerte", icon: AlertTriangle },
+  { cle: "client_absent", libelle: "Client absent", icon: UserX },
+  { cle: "question", libelle: "À qualifier", icon: HelpCircle },
+  { cle: "eclair", libelle: "Urgent", icon: Zap },
+  { cle: "point", libelle: "Neutre", icon: CircleDot },
+];
+
+const COULEURS_QUALIFICATION = [
+  { cle: "vert", libelle: "Vert", color: C.green, soft: C.greenSoft },
+  { cle: "ambre", libelle: "Ambre", color: C.amber, soft: C.amberSoft },
+  { cle: "turquoise", libelle: "Turquoise", color: C.teal, soft: C.tealSoft },
+  { cle: "rouge", libelle: "Rouge", color: C.red, soft: C.redSoft },
+  { cle: "encre", libelle: "Encre", color: C.ink, soft: C.borderSoft },
+  { cle: "gris", libelle: "Gris", color: C.mutedSoft, soft: C.borderSoft },
+];
+
+// Style d'une categorie : ce que le super admin a choisi d'abord, sinon les
+// valeurs historiques codees en dur, sinon le style neutre.
+function styleCategorie(categorie, icone, couleur) {
+  const base = CATEGORY_STYLE[categorie] || FALLBACK_STYLE;
+  const choisie = ICONES_QUALIFICATION.find((i) => i.cle === icone);
+  const teinte = COULEURS_QUALIFICATION.find((c) => c.cle === couleur);
+  return {
+    icon: choisie ? choisie.icon : base.icon,
+    color: teinte ? teinte.color : base.color,
+    soft: teinte ? teinte.soft : base.soft,
+    icone: icone || null,
+    couleur: couleur || null,
+  };
+}
 
 const STATUS_META = {
   disponible: { label: "Disponible", color: C.teal, soft: C.tealSoft, icon: CircleDot },
@@ -735,14 +788,21 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const bump = () => setRefreshFlag((n) => n + 1);
 
   const loadTree = useCallback(async () => {
-    setTreeLoading(true); setTreeError(null);
+    // Pas de setTreeLoading(true) ici : il remettrait toute la page en ecran
+    // de chargement a chaque rechargement de l'arbre, demontant l'onglet
+    // ouvert et son etat. L'etat initial suffit pour le premier chargement ;
+    // ensuite on remplace les donnees sans faire clignoter l'ecran.
+    setTreeError(null);
     try {
       const rows = await supaRest("types_qualification?select=*&actif=eq.true&order=ordre.asc", { accessToken });
       const byCat = [];
       for (const r of rows) {
         let cat = byCat.find((c) => c.categorie === r.categorie);
         if (!cat) {
-          const style = CATEGORY_STYLE[r.categorie] || FALLBACK_STYLE;
+          // icone et couleur appartiennent a la categorie : la premiere ligne
+          // qui en porte une fait foi pour toute la categorie.
+          const source = rows.find((x) => x.categorie === r.categorie && (x.icone || x.couleur)) || r;
+          const style = styleCategorie(r.categorie, source.icone, source.couleur);
           cat = { categorie: r.categorie, ...style, subs: [] };
           byCat.push(cat);
         }
@@ -5785,6 +5845,9 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
 /* ---------------------------------- admin : règles ---------------------------------- */
 
 function Rules({ accessToken, tree, reload }) {
+  // Au-dessus des cartes : recharger l'arbre apres un choix ne doit pas
+  // refermer le panneau, sinon il faut le rouvrir entre l'icone et la couleur.
+  const [apparenceOuverte, setApparenceOuverte] = useState(null);
   const [error, setError] = useState(null);
   const [showNewCat, setShowNewCat] = useState(false);
   const [newCatName, setNewCatName] = useState("");
@@ -5797,6 +5860,15 @@ function Rules({ accessToken, tree, reload }) {
   async function updateSub(id, patch) {
     try {
       await supaRest(`types_qualification?id=eq.${id}`, { method: "PATCH", accessToken, body: patch });
+      reload();
+    } catch (e) { setError(e.message); }
+  }
+
+  // L'apparence appartient a la categorie : une seule requete met a jour
+  // toutes ses lignes, par filtre, sans avoir a les enumerer.
+  async function setApparence(categorie, patch) {
+    try {
+      await supaRest(`types_qualification?categorie=eq.${encodeURIComponent(categorie)}`, { method: "PATCH", accessToken, body: patch });
       reload();
     } catch (e) { setError(e.message); }
   }
@@ -5877,14 +5949,16 @@ function Rules({ accessToken, tree, reload }) {
       {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
         {tree.map((cat) => (
-          <RuleCard key={cat.categorie} cat={cat} onUpdate={updateSub} onDelete={deleteSub} onAdd={addSub} />
+          <RuleCard key={cat.categorie} cat={cat} onUpdate={updateSub} onDelete={deleteSub} onAdd={addSub} onApparence={setApparence}
+            apparenceOuverte={apparenceOuverte === cat.categorie}
+            onToggleApparence={() => setApparenceOuverte((c) => (c === cat.categorie ? null : cat.categorie))} />
         ))}
       </div>
     </div>
   );
 }
 
-function RuleCard({ cat, onUpdate, onDelete, onAdd }) {
+function RuleCard({ cat, onUpdate, onDelete, onAdd, onApparence, apparenceOuverte, onToggleApparence }) {
   const [newLabel, setNewLabel] = useState("");
   const [newDelay, setNewDelay] = useState(24);
   const [newTerminal, setNewTerminal] = useState(false);
@@ -5897,9 +5971,50 @@ function RuleCard({ cat, onUpdate, onDelete, onAdd }) {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
       <div className="flex items-center gap-2 mb-4">
-        <div style={{ width: 26, height: 26, borderRadius: 7, background: cat.soft }} className="flex items-center justify-center"><Icon size={14} color={cat.color} /></div>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>{cat.categorie}</span>
+        <button onClick={() => onToggleApparence()} title="Changer l'icône et la couleur de cette catégorie"
+          style={{ width: 26, height: 26, borderRadius: 7, background: cat.soft, border: "none", padding: 0, flexShrink: 0 }}
+          className="flex items-center justify-center">
+          <Icon size={14} color={cat.color} />
+        </button>
+        <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{cat.categorie}</span>
+        <button onClick={() => onToggleApparence()}
+          style={{ background: "none", border: "none", padding: 2, fontSize: 11, color: C.mutedSoft, textDecoration: "underline" }}>
+          {apparenceOuverte ? "Fermer" : "Apparence"}
+        </button>
       </div>
+
+      {apparenceOuverte && (
+        <div style={{ background: C.canvas, borderRadius: 9, padding: 12, marginBottom: 14 }}>
+          <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 7 }}>Icône</div>
+          <div className="flex flex-wrap gap-1.5" style={{ marginBottom: 12 }}>
+            {ICONES_QUALIFICATION.map((i) => {
+              const Ico = i.icon;
+              const actif = cat.icone === i.cle;
+              return (
+                <button key={i.cle} title={i.libelle} onClick={() => onApparence(cat.categorie, { icone: i.cle })}
+                  style={{ width: 30, height: 30, borderRadius: 7, background: actif ? cat.soft : C.surface, border: `1px solid ${actif ? cat.color : C.border}`, padding: 0 }}
+                  className="flex items-center justify-center">
+                  <Ico size={14} color={actif ? cat.color : C.muted} />
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 7 }}>Couleur</div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {COULEURS_QUALIFICATION.map((c) => (
+              <button key={c.cle} title={c.libelle} onClick={() => onApparence(cat.categorie, { couleur: c.cle })}
+                style={{ width: 24, height: 24, borderRadius: 999, background: c.color, border: cat.couleur === c.cle ? `2px solid ${C.ink}` : `1px solid ${C.border}`, padding: 0 }} />
+            ))}
+            <button onClick={() => onApparence(cat.categorie, { icone: null, couleur: null })}
+              style={{ background: "none", border: "none", fontSize: 11, color: C.mutedSoft, textDecoration: "underline", marginLeft: 6 }}>
+              Réinitialiser
+            </button>
+          </div>
+          <p style={{ fontSize: 10.5, color: C.mutedSoft, marginTop: 9, lineHeight: 1.45 }}>
+            S'applique partout où la catégorie apparaît : boutons de qualification de l'agent, historique, résultats.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         {cat.subs.map((s) => (
