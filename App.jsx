@@ -2816,6 +2816,135 @@ function AnalyticsPanel({ accessToken }) {
 
 const JOURS_COURTS = ["D", "L", "M", "M", "J", "V", "S"];
 
+// Avancement des campagnes, lot par lot. Deux lectures cote a cote : ce qui a
+// ete fait sur la periode choisie, et ou en est le lot depuis son import.
+function ProgressionParLot({ rows, periode }) {
+  const [ouvert, setOuvert] = useState(true);
+  const libelle = periode === "jour" ? "Aujourd'hui" : periode === "semaine" ? "Cette semaine" : "Ce mois-ci";
+
+  const campagnes = useMemo(() => {
+    if (!rows) return null;
+    const parCampagne = new Map();
+    for (const r of rows) {
+      if (!parCampagne.has(r.campagne_id)) {
+        parCampagne.set(r.campagne_id, { id: r.campagne_id, nom: r.campagne_nom, active: r.campagne_active, lots: [] });
+      }
+      parCampagne.get(r.campagne_id).lots.push(r);
+    }
+    return [...parCampagne.values()].map((c) => {
+      const somme = (cle) => c.lots.reduce((t, l) => t + Number(l[cle] || 0), 0);
+      return { ...c, total: somme("total"), traitees: somme("traitees_periode"), ventes: somme("ventes_periode"),
+               deja: somme("deja_traitees"), disponibles: somme("disponibles") };
+    }).sort((a, b) => b.traitees - a.traitees || b.total - a.total);
+  }, [rows]);
+
+  const Avancement = ({ deja, total }) => {
+    const pct = total > 0 ? Math.round((deja / total) * 100) : 0;
+    return (
+      <div className="flex items-center gap-2" style={{ justifyContent: "flex-end" }}>
+        <div style={{ width: 54, height: 5, background: C.borderSoft, borderRadius: 999, overflow: "hidden", flexShrink: 0 }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: pct >= 100 ? C.green : C.teal }} />
+        </div>
+        <span className="mono" style={{ fontSize: 11, color: C.muted, width: 32, textAlign: "right" }}>{pct}%</span>
+      </div>
+    );
+  };
+
+  const nb = (v) => Number(v || 0).toLocaleString("fr-FR");
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 24, overflow: "hidden" }}>
+      <button onClick={() => setOuvert((v) => !v)} className="flex items-center justify-between"
+        style={{ width: "100%", padding: "14px 18px", background: "none", border: "none", cursor: "pointer" }}>
+        <span className="flex items-center gap-2">
+          <Megaphone size={15} color={C.teal} />
+          <span className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Avancement par campagne et par lot</span>
+        </span>
+        {ouvert ? <ChevronUp size={15} color={C.mutedSoft} /> : <ChevronDown size={15} color={C.mutedSoft} />}
+      </button>
+
+      {ouvert && (
+        <div style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+          {!campagnes ? (
+            <div style={{ padding: 18 }}><CenterLoader /></div>
+          ) : campagnes.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: C.muted, padding: 18 }}>Aucun lot pour le moment.</p>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ background: C.canvas, textAlign: "left" }}>
+                  {[
+                    { l: "Campagne / lot", a: "left" },
+                    { l: libelle, a: "right" },
+                    { l: "Ventes", a: "right" },
+                    { l: "Déjà traitées", a: "right" },
+                    { l: "Jamais traitées", a: "right" },
+                    { l: "Disponibles", a: "right" },
+                    { l: "Total", a: "right" },
+                  ].map((h) => (
+                    <th key={h.l} style={{ padding: "9px 16px", color: C.muted, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.03em", textAlign: h.a, whiteSpace: "nowrap" }}>{h.l}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {campagnes.map((c) => (
+                  <Fragment key={c.id}>
+                    <tr style={{ borderTop: `1px solid ${C.border}`, background: C.canvas }}>
+                      <td style={{ padding: "9px 16px", fontWeight: 700 }}>
+                        <span className="flex items-center gap-2">
+                          {c.nom}
+                          {!c.active && (
+                            <span className="flex items-center gap-1" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 999, padding: "1px 7px", fontSize: 9.5, fontWeight: 600, color: C.muted, textTransform: "uppercase" }}>
+                              <PauseCircle size={9} /> Arrêtée
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="mono" style={{ padding: "9px 16px", textAlign: "right", fontWeight: 700 }}>{nb(c.traitees)}</td>
+                      <td className="mono" style={{ padding: "9px 16px", textAlign: "right", fontWeight: 700, color: c.ventes > 0 ? C.green : C.mutedSoft }}>{nb(c.ventes)}</td>
+                      <td style={{ padding: "9px 16px" }}><Avancement deja={c.deja} total={c.total} /></td>
+                      <td className="mono" style={{ padding: "9px 16px", textAlign: "right", fontWeight: 600 }}>{nb(c.total - c.deja)}</td>
+                      <td className="mono" style={{ padding: "9px 16px", textAlign: "right", color: C.muted }}>{nb(c.disponibles)}</td>
+                      <td className="mono" style={{ padding: "9px 16px", textAlign: "right", color: C.muted }}>{nb(c.total)}</td>
+                    </tr>
+                    {c.lots.map((l) => {
+                      const eteint = !l.lot_actif || !l.campagne_active;
+                      return (
+                        <tr key={l.lot_id} style={{ borderTop: `1px solid ${C.borderSoft}`, opacity: eteint ? 0.6 : 1 }}>
+                          <td style={{ padding: "8px 16px 8px 34px", color: C.text }}>
+                            <span className="flex items-center gap-2">
+                              {l.lot_nom}
+                              {eteint && (
+                                <span style={{ fontSize: 9.5, fontWeight: 600, color: C.mutedSoft, textTransform: "uppercase" }}>
+                                  {!l.lot_actif ? "arrêté" : "campagne arrêtée"}
+                                </span>
+                              )}
+                            </span>
+                          </td>
+                          <td className="mono" style={{ padding: "8px 16px", textAlign: "right" }}>{nb(l.traitees_periode)}</td>
+                          <td className="mono" style={{ padding: "8px 16px", textAlign: "right", color: Number(l.ventes_periode) > 0 ? C.green : C.mutedSoft }}>{nb(l.ventes_periode)}</td>
+                          <td style={{ padding: "8px 16px" }}><Avancement deja={Number(l.deja_traitees)} total={Number(l.total)} /></td>
+                          <td className="mono" style={{ padding: "8px 16px", textAlign: "right" }}>{nb(Number(l.total) - Number(l.deja_traitees))}</td>
+                          <td className="mono" style={{ padding: "8px 16px", textAlign: "right", color: C.muted }}>{nb(l.disponibles)}</td>
+                          <td className="mono" style={{ padding: "8px 16px", textAlign: "right", color: C.muted }}>{nb(l.total)}</td>
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <p style={{ fontSize: 10.5, color: C.mutedSoft, padding: "10px 16px", borderTop: `1px solid ${C.borderSoft}` }}>
+La première colonne de chiffres et « Ventes » suivent le calendrier choisi en haut de page. « Déjà traitées » compte les fiches qualifiées au moins une fois depuis l'import, quelle que soit la période — une fiche recyclée (injoignable, pas de réponse…) y reste comptée tout en redevenant disponible, d'où des lots à 100 % qui donnent encore du travail. « Jamais traitées » est le stock neuf restant.
+            Les lots arrêtés sont affichés en grisé : leurs fiches ne sont pas comptées dans les compteurs en haut de page.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DailyChart({ titre, serie, couleur, pourcentage, reference }) {
   const { points, total, precedent } = serie;
   const fmt = (v) => (pourcentage ? `${Math.round(v)} %` : Math.round(v).toLocaleString("fr-FR"));
@@ -2885,6 +3014,22 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
   const [perf, setPerf] = useState(null); // { traitees, contacts, ventes, dureeMoyenne }
   const [error, setError] = useState(null);
   const [periode, setPeriode] = useState("jour"); // jour | semaine | mois
+  const [parLot, setParLot] = useState(null);
+
+  // Deux agregations en base, une par famille de chiffres. Volontairement hors
+  // du cycle de 30 secondes : cette vue sert a piloter, pas a suivre la
+  // seconde, et la relancer en boucle pese sur la base pour rien. Elle se
+  // recharge au changement de periode et sur rafraichissement manuel.
+  const loadParLot = useCallback(async () => {
+    try {
+      const debut = debutPeriode(periode);
+      const fin = finPeriode(periode, debut);
+      const rows = await rpc("resultats_par_lot", accessToken, { p_debut: debut.toISOString(), p_fin: fin.toISOString() });
+      setParLot(rows || []);
+    } catch (e) { setError(e.message); }
+  }, [accessToken, periode]);
+
+  useEffect(() => { loadParLot(); }, [loadParLot, refreshFlag]);
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -2996,6 +3141,8 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
           </div>
         </div>
       </div>
+
+      <ProgressionParLot rows={parLot} periode={periode} />
 
       <LiveStatusPanel accessToken={accessToken} callerRole={callerRole} />
       <FichesBloqueesEquipe accessToken={accessToken} />
