@@ -3016,10 +3016,10 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
   const [periode, setPeriode] = useState("jour"); // jour | semaine | mois
   const [parLot, setParLot] = useState(null);
 
-  // Deux agregations en base, une par famille de chiffres. Volontairement hors
-  // du cycle de 30 secondes : cette vue sert a piloter, pas a suivre la
-  // seconde, et la relancer en boucle pese sur la base pour rien. Elle se
-  // recharge au changement de periode et sur rafraichissement manuel.
+  // Deux agregations en base, une par famille de chiffres. Rafraichies au meme
+  // rythme que le reste du tableau de bord : le comptage d'etat s'appuie sur
+  // l'index clients(lot_id, statut, type_qualification_id), sans lequel
+  // chaque appel reparcourt les 82 000 fiches.
   const loadParLot = useCallback(async () => {
     try {
       const debut = debutPeriode(periode);
@@ -3030,6 +3030,7 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
   }, [accessToken, periode]);
 
   useEffect(() => { loadParLot(); }, [loadParLot, refreshFlag]);
+  useEffect(() => { const t = setInterval(loadParLot, 30000); return () => clearInterval(t); }, [loadParLot]);
 
   const loadDashboard = useCallback(async () => {
     try {
