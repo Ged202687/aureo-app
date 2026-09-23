@@ -779,8 +779,12 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const compterNonLus = useCallback(async () => {
     try {
       const [ligne] = await supaRest(`lectures_chat?select=lu_jusqu_a&canal=eq.global&agent_id=eq.${session.user.id}`, { accessToken });
+      // encodeURIComponent obligatoire : la base renvoie l'horodatage avec son
+      // fuseau (...+00:00), et un "+" dans une URL vaut un espace. Sans cet
+      // encodage la requete part en 400, l'erreur est avalee, et la pastille
+      // reste figee sur son dernier total.
       const depuis = ligne?.lu_jusqu_a || new Date(0).toISOString();
-      setNonLus(await supaCount(`messages_chat?select=id&created_at=gt.${depuis}&auteur_id=neq.${session.user.id}`, accessToken));
+      setNonLus(await supaCount(`messages_chat?select=id&created_at=gt.${encodeURIComponent(depuis)}&auteur_id=neq.${session.user.id}`, accessToken));
     } catch {}
   }, [accessToken, session.user.id]);
   useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 60000); return () => clearInterval(t); }, [compterNonLus]);
