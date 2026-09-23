@@ -94,6 +94,41 @@ async function fetchInChunks(pathPrefix, ids, accessToken, chunkSize = 150) {
 // car PostgREST plafonne silencieusement le nombre de lignes renvoyées par requête
 // (db-max-rows, généralement 1000) — sans pagination, les exports sur une longue période
 // ou avec beaucoup de fiches traitées se retrouvaient tronqués sans erreur ni avertissement.
+// Pagination par curseur, pour les longues listes triees par date. Chaque page
+// reprend juste apres la derniere ligne lue, au lieu de sauter N lignes : avec
+// un decalage, Postgres recalcule et jette a chaque page toutes les lignes
+// precedentes, si bien que la derniere page d'une semaine coutait trois fois
+// la premiere.
+//
+// Le curseur est le couple (created_at, id). L'horodatage est repris tel que
+// la base le renvoie, a la microseconde : un Date JavaScript le tronquerait a
+// la milliseconde, et des lignes seraient sautees ou doublees aux jointures
+// entre pages. L'id -- un UUID -- departage deux lignes du meme instant.
+//
+// Le chemin ne doit pas porter de clause order : l'ordre est impose ici, parce
+// que le curseur n'a de sens que dans cet ordre-la.
+async function fetchParCurseur(path, accessToken, pageSize = 1000) {
+  const sep = path.includes("?") ? "&" : "?";
+  const all = [];
+  let curseur = null;
+  while (true) {
+    let url = `${path}${sep}order=created_at.desc,id.desc&limit=${pageSize}`;
+    if (curseur) {
+      const t = `"${curseur.created_at}"`;
+      url += `&or=${encodeURIComponent(`(created_at.lt.${t},and(created_at.eq.${t},id.lt.${curseur.id}))`)}`;
+    }
+    const page = await supaRest(url, { accessToken });
+    all.push(...page);
+    // Arret sur page vide, et non sur page incomplete : si le plafond de lignes
+    // du serveur etait un jour inferieur a pageSize, une page "courte"
+    // n'indiquerait pas la fin et l'export serait silencieusement tronque.
+    if (page.length === 0) break;
+    const derniere = page[page.length - 1];
+    curseur = { created_at: derniere.created_at, id: derniere.id };
+  }
+  return all;
+}
+
 async function fetchPaged(path, accessToken, pageSize = 1000) {
   const sep = path.includes("?") ? "&" : "?";
   const all = [];
@@ -3651,9 +3686,7 @@ function ExportPanel({ accessToken }) {
       if (categorieFiltre) chemin += `&types_qualification.categorie=eq.${encodeURIComponent(categorieFiltre)}`;
       if (motifFiltre) chemin += `&types_qualification.motif=eq.${encodeURIComponent(motifFiltre)}`;
       if (lotIdsFiltre) chemin += `&clients.lot_id=in.(${lotIdsFiltre.join(",")})`;
-      chemin += "&order=created_at.desc,id.asc";
-
-      const qualifs = await fetchPaged(chemin, accessToken);
+      const qualifs = await fetchParCurseur(chemin, accessToken);
       if (qualifs.length === 0) { setRows([]); setCriteresRecherche(figes); return; }
 
       const clientIds = [...new Set(qualifs.map((q) => q.client_id))];
