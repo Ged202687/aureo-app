@@ -7,7 +7,7 @@ import {
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award, TrendingUp,
-  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink,
+  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink, Smile,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -3773,6 +3773,16 @@ function ExportPanel({ accessToken }) {
 
 /* ---------------------------------- messagerie ---------------------------------- */
 
+// Palette volontairement courte et orientee metier : de quoi nuancer un
+// message en un clic, sans embarquer une bibliotheque d'emojis de 500 ko
+// dans une application qui evite les dependances.
+const EMOJIS = [
+  { groupe: "Visages", liste: ["🙂", "😀", "😄", "😉", "😊", "😅", "😂", "🙃", "😌", "🤔", "😐", "😕", "😟", "😮", "😔", "😴"] },
+  { groupe: "Gestes", liste: ["👍", "👎", "👌", "👏", "🙏", "💪", "👋", "🤝", "🙌", "🤞", "✌️", "👀"] },
+  { groupe: "Travail", liste: ["📞", "📱", "💬", "📝", "📊", "📅", "⏰", "✅", "❌", "⚠️", "❗", "❓", "🔔", "📌", "🎯", "☕"] },
+  { groupe: "Encouragements", liste: ["🎉", "🔥", "⭐", "💡", "✨", "🚀", "💯", "❤️", "🍀", "😎"] },
+];
+
 // Cle de conversation, cote client comme en base : 'general', 'equipe:<id>'
 // ou 'direct:<id de l'interlocuteur>'.
 function cleCanal(c) {
@@ -3813,6 +3823,40 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
   const [recherche, setRecherche] = useState("");
   const finRef = useRef(null);
   const dernierCanalRef = useRef(null);
+  const saisieRef = useRef(null);
+  const paletteRef = useRef(null);
+  const curseurRef = useRef(null);
+  const [emojisOuverts, setEmojisOuverts] = useState(false);
+
+  // Fermeture au clic en dehors : le bouton est dans le meme conteneur que la
+  // palette, sinon il la refermerait puis la rouvrirait aussitot.
+  useEffect(() => {
+    if (!emojisOuverts) return;
+    const fermer = (ev) => { if (!paletteRef.current?.contains(ev.target)) setEmojisOuverts(false); };
+    document.addEventListener("mousedown", fermer);
+    return () => document.removeEventListener("mousedown", fermer);
+  }, [emojisOuverts]);
+
+  // Insertion la ou se trouve le curseur, pas systematiquement a la fin : on
+  // ajoute souvent un emoji au milieu d'une phrase deja ecrite.
+  function insererEmoji(emoji) {
+    const el = saisieRef.current;
+    if (!el) { setTexte((t) => t + emoji); return; }
+    const debut = el.selectionStart ?? texte.length;
+    const fin = el.selectionEnd ?? texte.length;
+    curseurRef.current = debut + emoji.length;
+    setTexte(texte.slice(0, debut) + emoji + texte.slice(fin));
+  }
+
+  // Le curseur se repositionne apres que React a repose la valeur dans le
+  // champ : le faire plus tot le laissait filer en fin de ligne, et la frappe
+  // reprenait au mauvais endroit.
+  useEffect(() => {
+    if (curseurRef.current === null) return;
+    const el = saisieRef.current;
+    if (el) { el.focus(); el.setSelectionRange(curseurRef.current, curseurRef.current); }
+    curseurRef.current = null;
+  }, [texte]);
 
   // Deux fonctions dediees, pour deux raisons differentes : la RLS de profils
   // masque les collegues, donc un agent ne pourrait pas nommer son
@@ -4102,7 +4146,32 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
           </div>
 
           <form onSubmit={envoyer} className="flex items-center gap-2" style={{ padding: 12, borderTop: `1px solid ${C.borderSoft}` }}>
-            <input value={texte} onChange={(ev) => setTexte(ev.target.value)} maxLength={2000}
+            <div ref={paletteRef} style={{ position: "relative", flexShrink: 0 }}>
+              <button type="button" onClick={() => setEmojisOuverts((v) => !v)} title="Insérer un émoji"
+                style={{ background: emojisOuverts ? C.canvas : "transparent", border: `1px solid ${emojisOuverts ? C.border : "transparent"}`, borderRadius: 9, padding: 9, display: "flex" }}>
+                <Smile size={17} color={emojisOuverts ? C.ink : C.mutedSoft} />
+              </button>
+              {emojisOuverts && (
+                <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 268, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, boxShadow: "0 10px 30px rgba(15,23,42,0.13)", zIndex: 20 }}>
+                  {EMOJIS.map((g) => (
+                    <div key={g.groupe} style={{ marginBottom: 6 }}>
+                      <div style={{ fontSize: 9.5, color: C.mutedSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 }}>{g.groupe}</div>
+                      <div className="flex flex-wrap" style={{ gap: 1 }}>
+                        {g.liste.map((e) => (
+                          <button key={e} type="button" onClick={() => insererEmoji(e)} title={e}
+                            style={{ background: "none", border: "none", borderRadius: 6, padding: "3px 4px", fontSize: 18, lineHeight: 1.2, cursor: "pointer" }}
+                            onMouseEnter={(ev) => (ev.currentTarget.style.background = C.canvas)}
+                            onMouseLeave={(ev) => (ev.currentTarget.style.background = "none")}>
+                            {e}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <input ref={saisieRef} value={texte} onChange={(ev) => setTexte(ev.target.value)} maxLength={2000}
               placeholder={canal.type === "direct" ? `Message à ${titreCanal}…` : `Message dans ${titreCanal}…`}
               style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 9, padding: "10px 12px", fontSize: 13 }} />
             <button type="submit" disabled={envoi || !texte.trim()}
