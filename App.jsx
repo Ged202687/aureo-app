@@ -3821,7 +3821,8 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
   const [envoi, setEnvoi] = useState(false);
   const [error, setError] = useState(null);
   const [recherche, setRecherche] = useState("");
-  const finRef = useRef(null);
+  const filRef = useRef(null);
+  const auBasRef = useRef(true);
   const dernierCanalRef = useRef(null);
   const saisieRef = useRef(null);
   const paletteRef = useRef(null);
@@ -3918,7 +3919,18 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
   const charger = useCallback(async () => {
     try {
       const rows = await supaRest(`messages_chat?select=id,auteur_id,contenu,created_at&${filtre()}&order=created_at.desc&limit=80`, { accessToken });
-      setMessages(rows.reverse());
+      rows.reverse();
+      // Avant de remplacer la liste, on note si l'on etait deja en bas du fil :
+      // c'est ce qui decide si l'arrivee d'un message doit faire defiler.
+      const el = filRef.current;
+      auBasRef.current = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+      setMessages((anciens) => {
+        if (anciens && anciens.length === rows.length
+            && anciens.every((m, i) => m.id === rows[i].id && m.contenu === rows[i].contenu)) {
+          return anciens;   // rien de neuf : on garde la meme reference
+        }
+        return rows;
+      });
       resoudreNoms(rows.map((m) => m.auteur_id));
       setError(null);
     } catch (e) { setError(e.message); }
@@ -3951,7 +3963,14 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
     marquerLu();
   }, [messages, canal]); // eslint-disable-line
 
-  useEffect(() => { finRef.current?.scrollIntoView({ block: "end" }); }, [messages]);
+  // scrollIntoView remontait la page entiere a chaque cycle de 5 secondes,
+  // en pleine frappe. On deplace desormais le seul conteneur du fil, et
+  // uniquement si l'on n'etait pas en train de relire plus haut.
+  useEffect(() => {
+    const el = filRef.current;
+    if (!el || !auBasRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   async function envoyer(e) {
     e.preventDefault();
@@ -4107,7 +4126,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
             {canal.type === "equipe" && <span style={{ fontSize: 11, color: C.mutedSoft }}>· l'équipe, son coach et l'encadrement</span>}
           </div>
 
-          <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+          <div ref={filRef} style={{ flex: 1, overflowY: "auto", padding: 16 }}>
             {messages === null ? (
               <CenterLoader />
             ) : messages.length === 0 ? (
@@ -4140,7 +4159,6 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
                     </div>
                   );
                 })}
-                <div ref={finRef} />
               </div>
             )}
           </div>
