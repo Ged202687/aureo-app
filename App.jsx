@@ -3776,6 +3776,10 @@ function ExportPanel({ accessToken }) {
 // Palette volontairement courte et orientee metier : de quoi nuancer un
 // message en un clic, sans embarquer une bibliotheque d'emojis de 500 ko
 // dans une application qui evite les dependances.
+// Reactions proposees au survol d'un message. Volontairement peu nombreuses :
+// une reaction doit se poser sans reflechir, sinon autant ecrire un message.
+const REACTIONS_RAPIDES = ["👍", "❤️", "😂", "🎉", "👏", "😮", "🙏", "✅"];
+
 const EMOJIS = [
   { groupe: "Visages", liste: ["🙂", "😀", "😄", "😉", "😊", "😅", "😂", "🙃", "😌", "🤔", "😐", "😕", "😟", "😮", "😔", "😴"] },
   { groupe: "Gestes", liste: ["👍", "👎", "👌", "👏", "🙏", "💪", "👋", "🤝", "🙌", "🤞", "✌️", "👀"] },
@@ -3828,6 +3832,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
   const paletteRef = useRef(null);
   const curseurRef = useRef(null);
   const [emojisOuverts, setEmojisOuverts] = useState(false);
+  const [reactionOuverte, setReactionOuverte] = useState(null);
 
   // Fermeture au clic en dehors : le bouton est dans le meme conteneur que la
   // palette, sinon il la refermerait puis la rouvrirait aussitot.
@@ -3918,20 +3923,21 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
 
   const charger = useCallback(async () => {
     try {
-      const rows = await supaRest(`messages_chat?select=id,auteur_id,contenu,created_at&${filtre()}&order=created_at.desc&limit=80`, { accessToken });
+      const rows = await supaRest(`messages_chat?select=id,auteur_id,contenu,created_at,reactions_chat(emoji,agent_id)&${filtre()}&order=created_at.desc&limit=80`, { accessToken });
       rows.reverse();
       // Avant de remplacer la liste, on note si l'on etait deja en bas du fil :
       // c'est ce qui decide si l'arrivee d'un message doit faire defiler.
       const el = filRef.current;
       auBasRef.current = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 60;
       setMessages((anciens) => {
+        const signature = (m) => `${m.id}|${m.contenu}|${(m.reactions_chat || []).map((r) => r.agent_id + r.emoji).sort().join(",")}`;
         if (anciens && anciens.length === rows.length
-            && anciens.every((m, i) => m.id === rows[i].id && m.contenu === rows[i].contenu)) {
+            && anciens.every((m, i) => signature(m) === signature(rows[i]))) {
           return anciens;   // rien de neuf : on garde la meme reference
         }
         return rows;
       });
-      resoudreNoms(rows.map((m) => m.auteur_id));
+      resoudreNoms(rows.flatMap((m) => [m.auteur_id, ...(m.reactions_chat || []).map((r) => r.agent_id)]));
       setError(null);
     } catch (e) { setError(e.message); }
   }, [accessToken, filtre, resoudreNoms]);
@@ -3986,6 +3992,21 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
       await charger();
       if (canal.type === "direct") chargerConversations();
     } catch (e) { setError(e.message); } finally { setEnvoi(false); }
+  }
+
+  // Un clic pose la reaction, un second la retire : le meme geste dans les
+  // deux sens, comme partout ailleurs.
+  async function basculerReaction(message, emoji) {
+    const deja = (message.reactions_chat || []).some((r) => r.agent_id === moiId && r.emoji === emoji);
+    try {
+      if (deja) {
+        await supaRest(`reactions_chat?message_id=eq.${message.id}&agent_id=eq.${moiId}&emoji=eq.${encodeURIComponent(emoji)}`, { method: "DELETE", accessToken });
+      } else {
+        await supaRest("reactions_chat", { method: "POST", accessToken, prefer: "return=minimal", body: { message_id: message.id, agent_id: moiId, emoji } });
+      }
+      setReactionOuverte(null);
+      await charger();
+    } catch (e) { setError(e.message); }
   }
 
   async function supprimer(id) {
@@ -4148,13 +4169,55 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
                           <div style={{ background: deMoi ? C.ink : C.canvas, color: deMoi ? "#fff" : C.text, borderRadius: 11, padding: "8px 12px", fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                             {m.contenu}
                           </div>
-                          {deMoi && (
-                            <button onClick={() => supprimer(m.id)} title="Supprimer mon message"
-                              style={{ background: "none", border: "none", padding: 2, opacity: 0.45 }}>
-                              <Trash2 size={11} color={C.muted} />
+                          <div className="flex items-center" style={{ position: "relative", flexShrink: 0 }}>
+                            <button onClick={() => setReactionOuverte(reactionOuverte === m.id ? null : m.id)} title="Réagir"
+                              style={{ background: "none", border: "none", padding: 2, opacity: reactionOuverte === m.id ? 1 : 0.45 }}>
+                              <Smile size={12} color={C.muted} />
                             </button>
-                          )}
+                            {deMoi && (
+                              <button onClick={() => supprimer(m.id)} title="Supprimer mon message"
+                                style={{ background: "none", border: "none", padding: 2, opacity: 0.45 }}>
+                                <Trash2 size={11} color={C.muted} />
+                              </button>
+                            )}
+                            {reactionOuverte === m.id && (
+                              <div className="flex" style={{ position: "absolute", bottom: "calc(100% + 4px)", [deMoi ? "right" : "left"]: 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 999, padding: "3px 5px", boxShadow: "0 6px 18px rgba(15,23,42,0.13)", zIndex: 15, gap: 1 }}>
+                                {REACTIONS_RAPIDES.map((e) => (
+                                  <button key={e} onClick={() => basculerReaction(m, e)} title={e}
+                                    style={{ background: "none", border: "none", borderRadius: 999, padding: "2px 3px", fontSize: 15, lineHeight: 1.2 }}
+                                    onMouseEnter={(ev) => (ev.currentTarget.style.background = C.canvas)}
+                                    onMouseLeave={(ev) => (ev.currentTarget.style.background = "none")}>
+                                    {e}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
+
+                        {(() => {
+                          const parEmoji = new Map();
+                          for (const r of m.reactions_chat || []) {
+                            if (!parEmoji.has(r.emoji)) parEmoji.set(r.emoji, []);
+                            parEmoji.get(r.emoji).push(r.agent_id);
+                          }
+                          if (parEmoji.size === 0) return null;
+                          return (
+                            <div className="flex flex-wrap gap-1" style={{ marginTop: 3, justifyContent: deMoi ? "flex-end" : "flex-start" }}>
+                              {[...parEmoji].map(([emoji, gens]) => {
+                                const moiDedans = gens.includes(moiId);
+                                return (
+                                  <button key={emoji} onClick={() => basculerReaction(m, emoji)}
+                                    title={gens.map((id) => (id === moiId ? "Moi" : nomDe(id))).join(", ")}
+                                    style={{ display: "flex", alignItems: "center", gap: 3, background: moiDedans ? C.amberSoft : C.surface, border: `1px solid ${moiDedans ? C.amber : C.border}`, borderRadius: 999, padding: "1px 7px", fontSize: 12, lineHeight: 1.5 }}>
+                                    <span>{emoji}</span>
+                                    <span className="mono" style={{ fontSize: 10.5, color: moiDedans ? C.ink : C.muted, fontWeight: 600 }}>{gens.length}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
