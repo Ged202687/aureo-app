@@ -7,7 +7,7 @@ import {
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award, TrendingUp,
-  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink, Smile,
+  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink, Smile, Reply,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -3833,6 +3833,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
   const curseurRef = useRef(null);
   const [emojisOuverts, setEmojisOuverts] = useState(false);
   const [reactionOuverte, setReactionOuverte] = useState(null);
+  const [repondA, setRepondA] = useState(null);
 
   // Fermeture au clic en dehors : le bouton est dans le meme conteneur que la
   // palette, sinon il la refermerait puis la rouvrirait aussitot.
@@ -3923,7 +3924,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
 
   const charger = useCallback(async () => {
     try {
-      const rows = await supaRest(`messages_chat?select=id,auteur_id,contenu,created_at,reactions_chat(emoji,agent_id)&${filtre()}&order=created_at.desc&limit=80`, { accessToken });
+      const rows = await supaRest(`messages_chat?select=id,auteur_id,contenu,created_at,repond_a,cite:repond_a(id,contenu,auteur_id),reactions_chat(emoji,agent_id)&${filtre()}&order=created_at.desc&limit=80`, { accessToken });
       rows.reverse();
       // Avant de remplacer la liste, on note si l'on etait deja en bas du fil :
       // c'est ce qui decide si l'arrivee d'un message doit faire defiler.
@@ -3937,14 +3938,14 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
         }
         return rows;
       });
-      resoudreNoms(rows.flatMap((m) => [m.auteur_id, ...(m.reactions_chat || []).map((r) => r.agent_id)]));
+      resoudreNoms(rows.flatMap((m) => [m.auteur_id, m.cite?.auteur_id, ...(m.reactions_chat || []).map((r) => r.agent_id)]));
       setError(null);
     } catch (e) { setError(e.message); }
   }, [accessToken, filtre, resoudreNoms]);
 
   // Cinq secondes pendant qu'on lit la conversation ouverte, rien quand
   // l'onglet est ailleurs : le compteur de la barre laterale suffit alors.
-  useEffect(() => { setMessages(null); charger(); }, [charger]);
+  useEffect(() => { setMessages(null); setRepondA(null); charger(); }, [charger]);
   useEffect(() => { const t = setInterval(charger, 5000); return () => clearInterval(t); }, [charger]);
 
   // Marquer comme lu : la conversation ouverte et le repere global.
@@ -3987,8 +3988,10 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
       const corps = { auteur_id: moiId, contenu, portee: canal.type === "general" ? "general" : canal.type };
       if (canal.type === "equipe") corps.equipe_id = canal.id;
       if (canal.type === "direct") corps.destinataire_id = canal.id;
+      if (repondA) corps.repond_a = repondA.id;
       await supaRest("messages_chat", { method: "POST", accessToken, body: corps });
       setTexte("");
+      setRepondA(null);
       await charger();
       if (canal.type === "direct") chargerConversations();
     } catch (e) { setError(e.message); } finally { setEnvoi(false); }
@@ -4158,18 +4161,37 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
                   const deMoi = m.auteur_id === moiId;
                   const memeAuteur = i > 0 && messages[i - 1].auteur_id === m.auteur_id;
                   return (
-                    <div key={m.id} style={{ display: "flex", justifyContent: deMoi ? "flex-end" : "flex-start" }}>
+                    <div key={m.id} id={`msg-${m.id}`} style={{ display: "flex", justifyContent: deMoi ? "flex-end" : "flex-start" }}>
                       <div style={{ maxWidth: "76%" }}>
                         {!memeAuteur && (
                           <div style={{ fontSize: 10.5, color: C.mutedSoft, marginBottom: 3, textAlign: deMoi ? "right" : "left" }}>
                             {deMoi ? "Moi" : nomDe(m.auteur_id)} · {new Date(m.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
                           </div>
                         )}
+                        {m.repond_a && (
+                          <button onClick={() => {
+                              const cible = document.getElementById(`msg-${m.repond_a}`);
+                              if (cible) { cible.scrollIntoView({ block: "center" }); cible.style.transition = "background 0.4s"; cible.style.background = C.amberSoft; setTimeout(() => { cible.style.background = "transparent"; }, 900); }
+                            }}
+                            style={{ display: "block", width: "100%", textAlign: deMoi ? "right" : "left", background: "none", border: "none", padding: 0, marginBottom: 2 }}>
+                            <span style={{ display: "inline-block", maxWidth: "100%", borderLeft: `2px solid ${C.amber}`, paddingLeft: 7, fontSize: 11, color: C.mutedSoft, textAlign: "left" }}>
+                              <span style={{ fontWeight: 600, color: C.muted }}>{m.cite ? (m.cite.auteur_id === moiId ? "Moi" : nomDe(m.cite.auteur_id)) : ""}</span>
+                              {m.cite ? " · " : ""}
+                              <span style={{ fontStyle: m.cite ? "normal" : "italic" }}>
+                                {m.cite ? (m.cite.contenu.length > 70 ? m.cite.contenu.slice(0, 70) + "…" : m.cite.contenu) : "message supprimé ou non accessible"}
+                              </span>
+                            </span>
+                          </button>
+                        )}
                         <div className="flex items-end gap-1.5" style={{ flexDirection: deMoi ? "row-reverse" : "row" }}>
                           <div style={{ background: deMoi ? C.ink : C.canvas, color: deMoi ? "#fff" : C.text, borderRadius: 11, padding: "8px 12px", fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                             {m.contenu}
                           </div>
                           <div className="flex items-center" style={{ position: "relative", flexShrink: 0 }}>
+                            <button onClick={() => { setRepondA(m); saisieRef.current?.focus(); }} title="Répondre à ce message"
+                              style={{ background: "none", border: "none", padding: 2, opacity: 0.45 }}>
+                              <Reply size={12} color={C.muted} />
+                            </button>
                             <button onClick={() => setReactionOuverte(reactionOuverte === m.id ? null : m.id)} title="Réagir"
                               style={{ background: "none", border: "none", padding: 2, opacity: reactionOuverte === m.id ? 1 : 0.45 }}>
                               <Smile size={12} color={C.muted} />
@@ -4226,7 +4248,23 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
             )}
           </div>
 
-          <form onSubmit={envoyer} className="flex items-center gap-2" style={{ padding: 12, borderTop: `1px solid ${C.borderSoft}` }}>
+          {repondA && (
+            <div className="flex items-center gap-2" style={{ padding: "8px 12px 0 12px" }}>
+              <div className="flex items-center gap-2" style={{ flex: 1, minWidth: 0, background: C.canvas, borderLeft: `2px solid ${C.amber}`, borderRadius: "0 8px 8px 0", padding: "6px 10px" }}>
+                <Reply size={12} color={C.amber} style={{ flexShrink: 0 }} />
+                <span style={{ minWidth: 0, fontSize: 11.5, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <strong style={{ color: C.text }}>{repondA.auteur_id === moiId ? "Moi" : nomDe(repondA.auteur_id)}</strong>
+                  {" · "}{repondA.contenu}
+                </span>
+              </div>
+              <button type="button" onClick={() => setRepondA(null)} title="Annuler la réponse"
+                style={{ background: "none", border: "none", padding: 4, flexShrink: 0 }}>
+                <X size={13} color={C.mutedSoft} />
+              </button>
+            </div>
+          )}
+
+          <form onSubmit={envoyer} className="flex items-center gap-2" style={{ padding: 12, borderTop: repondA ? "none" : `1px solid ${C.borderSoft}` }}>
             <div ref={paletteRef} style={{ position: "relative", flexShrink: 0 }}>
               <button type="button" onClick={() => setEmojisOuverts((v) => !v)} title="Insérer un émoji"
                 style={{ background: emojisOuverts ? C.canvas : "transparent", border: `1px solid ${emojisOuverts ? C.border : "transparent"}`, borderRadius: 9, padding: 9, display: "flex" }}>
