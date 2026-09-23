@@ -38,14 +38,16 @@ async function supaUpdatePassword(accessToken, newPassword) {
   return data;
 }
 
-async function supaRest(path, { method = "GET", accessToken, body } = {}) {
+async function supaRest(path, { method = "GET", accessToken, body, prefer } = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${accessToken}`,
-      Prefer: method === "POST" || method === "PATCH" ? "return=representation" : undefined,
+      // prefer explicite : sert notamment aux upserts (resolution=merge-duplicates),
+      // qui sinon se heurtent a la cle primaire au deuxieme enregistrement.
+      Prefer: prefer || (method === "POST" || method === "PATCH" ? "return=representation" : undefined),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -736,17 +738,18 @@ function useElapsed(since) {
 }
 
 const ROLE_DEFAULT_TABS = {
-  super_admin: ["dashboard", "resultats", "analytics", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
-  admin: ["dashboard", "resultats", "analytics", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
-  superviseur: ["dashboard", "resultats", "analytics", "queue", "recherche", "presence", "export"],
-  coach: ["poste", "dashboard", "resultats", "analytics", "export"],
-  agent: ["poste", "resultats", "analytics"],
+  super_admin: ["dashboard", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
+  admin: ["dashboard", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
+  superviseur: ["dashboard", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export"],
+  coach: ["poste", "dashboard", "resultats", "analytics", "messagerie", "export"],
+  agent: ["poste", "resultats", "analytics", "messagerie"],
 };
 const TAB_DEFS = [
   { id: "poste", label: "Poste de travail", icon: Inbox },
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { id: "resultats", label: "Mes résultats", icon: Award },
   { id: "analytics", label: "Analytics", icon: TrendingUp },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
   { id: "queue", label: "File d'attente", icon: Users },
   { id: "recherche", label: "Recherche", icon: Search },
   { id: "presence", label: "Présence", icon: Timer },
@@ -768,6 +771,19 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const [role, setRole] = useState(isAdmin ? "admin" : isSuperviseur ? "superviseur" : isCoach ? "coach" : "agent");
   const [adminTab, setAdminTab] = useState((ROLE_DEFAULT_TABS[profil?.role] || ["dashboard"])[0]);
   const [tree, setTree] = useState([]);
+
+  // Un seul appel par minute, dont la reponse n'a pas de corps : le total des
+  // messages arrives depuis ma derniere lecture. La RLS fait le tri, je ne
+  // compte donc que ce que j'ai le droit de lire.
+  const [nonLus, setNonLus] = useState(0);
+  const compterNonLus = useCallback(async () => {
+    try {
+      const [ligne] = await supaRest(`lectures_chat?select=lu_jusqu_a&canal=eq.global&agent_id=eq.${session.user.id}`, { accessToken });
+      const depuis = ligne?.lu_jusqu_a || new Date(0).toISOString();
+      setNonLus(await supaCount(`messages_chat?select=id&created_at=gt.${depuis}&auteur_id=neq.${session.user.id}`, accessToken));
+    } catch {}
+  }, [accessToken, session.user.id]);
+  useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 60000); return () => clearInterval(t); }, [compterNonLus]);
   const elapsed = useElapsed(connectedAt);
   const [statutBusy, setStatutBusy] = useState(false);
   const [pauseTypes, setPauseTypes] = useState([]);
@@ -892,7 +908,8 @@ function Workspace({ session, onLogout, onProfilChange }) {
 
             <nav className="px-3 pt-5 flex flex-col gap-1">
               {TAB_DEFS.filter((t) => effectiveTabs.has(t.id)).map((t) => (
-                <NavItem key={t.id} icon={t.icon} label={t.label} active={adminTab === t.id} onClick={() => setAdminTab(t.id)} />
+                <NavItem key={t.id} icon={t.icon} label={t.label} active={adminTab === t.id} onClick={() => setAdminTab(t.id)}
+                  pastille={t.id === "messagerie" ? nonLus : 0} />
               ))}
             </nav>
           </div>
@@ -967,6 +984,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
               {adminTab === "analytics" && effectiveTabs.has("analytics") && <AnalyticsPanel accessToken={accessToken} />}
+              {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -1000,10 +1018,16 @@ function ErrorBlock({ message }) {
   );
 }
 
-function NavItem({ icon: Icon, label, active, onClick }) {
+function NavItem({ icon: Icon, label, active, onClick, pastille }) {
   return (
     <button onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, border: "none", background: active ? C.inkSoft : "transparent", color: active ? "#fff" : "#9AA1B0", fontSize: 13, fontWeight: 500, textAlign: "left" }}>
-      <Icon size={16} strokeWidth={2} /> {label}
+      <Icon size={16} strokeWidth={2} />
+      <span style={{ flex: 1 }}>{label}</span>
+      {pastille > 0 && (
+        <span className="mono" style={{ background: C.amber, color: C.ink, borderRadius: 999, padding: "1px 7px", fontSize: 10.5, fontWeight: 700 }}>
+          {pastille > 99 ? "99+" : pastille}
+        </span>
+      )}
     </button>
   );
 }
@@ -3739,6 +3763,288 @@ function ExportPanel({ accessToken }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------------------------- messagerie ---------------------------------- */
+
+// Cle de conversation, cote client comme en base : 'general', 'equipe:<id>'
+// ou 'direct:<id de l'interlocuteur>'.
+function cleCanal(c) {
+  if (!c) return "general";
+  return c.type === "general" ? "general" : `${c.type}:${c.id}`;
+}
+
+function Messagerie({ accessToken, moi, moiId, onLu }) {
+  // Pas d'annuaire complet cote navigateur : on ne detient que les
+  // conversations engagees, les resultats de la recherche en cours, et les
+  // noms des auteurs des messages affiches.
+  const [conversations, setConversations] = useState(null);
+  const [resultats, setResultats] = useState([]);
+  const [cherche, setCherche] = useState(false);
+  const noms = useRef(new Map());
+  const [, rafraichirNoms] = useState(0);
+  const [equipes, setEquipes] = useState([]);
+  const [canal, setCanal] = useState({ type: "general" });
+  const [messages, setMessages] = useState(null);
+  const [texte, setTexte] = useState("");
+  const [envoi, setEnvoi] = useState(false);
+  const [error, setError] = useState(null);
+  const [recherche, setRecherche] = useState("");
+  const finRef = useRef(null);
+  const dernierCanalRef = useRef(null);
+
+  // Deux fonctions dediees, pour deux raisons differentes : la RLS de profils
+  // masque les collegues, donc un agent ne pourrait pas nommer son
+  // destinataire ; et la liste des equipes doit etre celle que l'appelant
+  // peut reellement lire, calculee par la meme regle que les politiques RLS.
+  const chargerConversations = useCallback(async () => {
+    try { setConversations(await rpc("mes_conversations", accessToken, {}) || []); }
+    catch (e) { setError(e.message); }
+  }, [accessToken]);
+
+  useEffect(() => {
+    (async () => {
+      try { setEquipes(await rpc("canaux_equipes", accessToken, {}) || []); }
+      catch (e) { setError(e.message); }
+    })();
+    chargerConversations();
+  }, [accessToken, chargerConversations]);
+
+  // Recherche cote serveur, a partir de deux caracteres, et seulement apres
+  // une pause de frappe : ni liste complete, ni appel a chaque touche.
+  useEffect(() => {
+    const q = recherche.trim();
+    if (q.length < 2) { setResultats([]); setCherche(false); return; }
+    setCherche(true);
+    const t = setTimeout(async () => {
+      try { setResultats(await rpc("rechercher_personnes", accessToken, { p_recherche: q }) || []); }
+      catch (e) { setError(e.message); }
+      finally { setCherche(false); }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [recherche, accessToken]);
+
+  const nomDe = useCallback((id) => noms.current.get(id) || "…", []);
+
+  // Les auteurs qu'on ne connait pas encore sont demandes en une fois, puis
+  // gardes pour la suite de la session.
+  const resoudreNoms = useCallback(async (ids) => {
+    const manquants = [...new Set(ids)].filter((id) => id && !noms.current.has(id));
+    if (manquants.length === 0) return;
+    try {
+      const rows = await rpc("noms_personnes", accessToken, { p_ids: manquants });
+      for (const r of rows || []) noms.current.set(r.id, r.nom);
+      rafraichirNoms((v) => v + 1);
+    } catch {}
+  }, [accessToken]);
+
+  useEffect(() => {
+    for (const c of conversations || []) noms.current.set(c.id, c.nom);
+    for (const r of resultats) noms.current.set(r.id, r.nom);
+  }, [conversations, resultats]);
+
+  // Filtre PostgREST de la conversation courante.
+  const filtre = useCallback(() => {
+    if (canal.type === "general") return "portee=eq.general";
+    if (canal.type === "equipe") return `portee=eq.equipe&equipe_id=eq.${canal.id}`;
+    return `portee=eq.direct&or=(and(auteur_id.eq.${moiId},destinataire_id.eq.${canal.id}),and(auteur_id.eq.${canal.id},destinataire_id.eq.${moiId}))`;
+  }, [canal, moiId]);
+
+  const charger = useCallback(async () => {
+    try {
+      const rows = await supaRest(`messages_chat?select=id,auteur_id,contenu,created_at&${filtre()}&order=created_at.desc&limit=80`, { accessToken });
+      setMessages(rows.reverse());
+      resoudreNoms(rows.map((m) => m.auteur_id));
+      setError(null);
+    } catch (e) { setError(e.message); }
+  }, [accessToken, filtre, resoudreNoms]);
+
+  // Cinq secondes pendant qu'on lit la conversation ouverte, rien quand
+  // l'onglet est ailleurs : le compteur de la barre laterale suffit alors.
+  useEffect(() => { setMessages(null); charger(); }, [charger]);
+  useEffect(() => { const t = setInterval(charger, 5000); return () => clearInterval(t); }, [charger]);
+
+  // Marquer comme lu : la conversation ouverte et le repere global.
+  const marquerLu = useCallback(async () => {
+    const maintenant = new Date().toISOString();
+    try {
+      await supaRest("lectures_chat?on_conflict=agent_id,canal", {
+        method: "POST", accessToken,
+        prefer: "resolution=merge-duplicates,return=minimal",
+        body: [{ agent_id: moiId, canal: cleCanal(canal), lu_jusqu_a: maintenant },
+               { agent_id: moiId, canal: "global", lu_jusqu_a: maintenant }],
+      });
+      onLu && onLu();
+    } catch {}
+  }, [accessToken, moiId, canal, onLu]);
+
+  useEffect(() => {
+    if (messages === null) return;
+    const cle = cleCanal(canal);
+    if (dernierCanalRef.current === cle && messages.length === 0) return;
+    dernierCanalRef.current = cle;
+    marquerLu();
+  }, [messages, canal]); // eslint-disable-line
+
+  useEffect(() => { finRef.current?.scrollIntoView({ block: "end" }); }, [messages]);
+
+  async function envoyer(e) {
+    e.preventDefault();
+    const contenu = texte.trim();
+    if (!contenu || envoi) return;
+    setEnvoi(true); setError(null);
+    try {
+      const corps = { auteur_id: moiId, contenu, portee: canal.type === "general" ? "general" : canal.type };
+      if (canal.type === "equipe") corps.equipe_id = canal.id;
+      if (canal.type === "direct") corps.destinataire_id = canal.id;
+      await supaRest("messages_chat", { method: "POST", accessToken, body: corps });
+      setTexte("");
+      await charger();
+      if (canal.type === "direct") chargerConversations();
+    } catch (e) { setError(e.message); } finally { setEnvoi(false); }
+  }
+
+  async function supprimer(id) {
+    try {
+      await supaRest(`messages_chat?id=eq.${id}`, { method: "DELETE", accessToken });
+      await charger();
+    } catch (e) { setError(e.message); }
+  }
+
+  const titreCanal = canal.type === "general" ? "Général"
+    : canal.type === "equipe" ? (equipes.find((e) => e.id === canal.id)?.nom || "Équipe")
+    : nomDe(canal.id);
+
+  const ROLE_COURT = { super_admin: "Super admin", admin: "Admin", superviseur: "Superviseur", coach: "Coach", agent: "Agent" };
+
+  if (conversations === null) return <CenterLoader />;
+
+  const Entree = ({ actif, onClick, icone: Ico, libelle, detail }) => (
+    <button onClick={onClick} className="flex items-center gap-2"
+      style={{ width: "100%", textAlign: "left", background: actif ? C.canvas : "transparent", border: "none", borderRadius: 8, padding: "8px 10px" }}>
+      <Ico size={14} color={actif ? C.ink : C.mutedSoft} style={{ flexShrink: 0 }} />
+      <span style={{ minWidth: 0, flex: 1 }}>
+        <span style={{ display: "block", fontSize: 12.5, fontWeight: actif ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{libelle}</span>
+        {detail && <span style={{ display: "block", fontSize: 10.5, color: C.mutedSoft }}>{detail}</span>}
+      </span>
+    </button>
+  );
+
+  return (
+    <div>
+      <header className="mb-5">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Messagerie</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+          Le canal général et celui de votre équipe, et des messages directs avec n'importe quel collègue.
+        </p>
+      </header>
+
+      {error && <div className="mb-3"><ErrorBlock message={error} /></div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16, alignItems: "start" }}>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, maxHeight: 620, overflowY: "auto" }}>
+          <Entree actif={canal.type === "general"} onClick={() => setCanal({ type: "general" })} icone={Megaphone} libelle="Général" detail="Tout le plateau" />
+
+          {equipes.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 10, color: C.mutedSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", padding: "6px 10px" }}>Équipes</div>
+              {equipes.map((e) => (
+                <Entree key={e.id} actif={canal.type === "equipe" && canal.id === e.id} onClick={() => setCanal({ type: "equipe", id: e.id })}
+                  icone={UsersRound} libelle={e.nom} detail={e.est_la_mienne ? "Mon équipe" : null} />
+              ))}
+            </div>
+          )}
+
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 10, color: C.mutedSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", padding: "6px 10px" }}>Messages directs</div>
+            <input value={recherche} onChange={(ev) => setRecherche(ev.target.value)} placeholder="Chercher un collègue par son nom…"
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, marginBottom: 4 }} />
+
+            {recherche.trim().length >= 2 ? (
+              cherche ? (
+                <p style={{ fontSize: 11.5, color: C.mutedSoft, padding: "6px 10px" }}>Recherche…</p>
+              ) : resultats.length === 0 ? (
+                <p style={{ fontSize: 11.5, color: C.mutedSoft, padding: "6px 10px" }}>Personne ne correspond.</p>
+              ) : (
+                resultats.map((p) => (
+                  <Entree key={p.id} actif={canal.type === "direct" && canal.id === p.id} onClick={() => { setCanal({ type: "direct", id: p.id }); setRecherche(""); }}
+                    icone={UserCircle2} libelle={p.nom} detail={`${ROLE_COURT[p.role] || p.role}${p.equipe_nom ? " · " + p.equipe_nom : ""}`} />
+                ))
+              )
+            ) : recherche.trim().length === 1 ? (
+              <p style={{ fontSize: 11.5, color: C.mutedSoft, padding: "6px 10px" }}>Encore une lettre…</p>
+            ) : conversations.length === 0 ? (
+              <p style={{ fontSize: 11.5, color: C.mutedSoft, padding: "6px 10px", lineHeight: 1.45 }}>
+                Aucune conversation. Cherchez un collègue par son nom pour lui écrire.
+              </p>
+            ) : (
+              conversations.map((p) => (
+                <Entree key={p.id} actif={canal.type === "direct" && canal.id === p.id} onClick={() => setCanal({ type: "direct", id: p.id })}
+                  icone={UserCircle2} libelle={p.nom} detail={`${ROLE_COURT[p.role] || p.role}${p.equipe_nom ? " · " + p.equipe_nom : ""}`} />
+              ))
+            )}
+          </div>
+        </div>
+
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, display: "flex", flexDirection: "column", height: 620 }}>
+          <div className="flex items-center gap-2" style={{ padding: "12px 16px", borderBottom: `1px solid ${C.borderSoft}` }}>
+            {canal.type === "general" ? <Megaphone size={15} color={C.teal} /> : canal.type === "equipe" ? <UsersRound size={15} color={C.teal} /> : <UserCircle2 size={15} color={C.teal} />}
+            <span style={{ fontSize: 14, fontWeight: 600 }}>{titreCanal}</span>
+            {canal.type === "direct" && <span style={{ fontSize: 11, color: C.mutedSoft }}>· conversation privée</span>}
+            {canal.type === "equipe" && <span style={{ fontSize: 11, color: C.mutedSoft }}>· l'équipe, son coach et l'encadrement</span>}
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+            {messages === null ? (
+              <CenterLoader />
+            ) : messages.length === 0 ? (
+              <p style={{ fontSize: 12.5, color: C.mutedSoft }}>Aucun message pour l'instant. Lancez la conversation.</p>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {messages.map((m, i) => {
+                  const deMoi = m.auteur_id === moiId;
+                  const memeAuteur = i > 0 && messages[i - 1].auteur_id === m.auteur_id;
+                  return (
+                    <div key={m.id} style={{ display: "flex", justifyContent: deMoi ? "flex-end" : "flex-start" }}>
+                      <div style={{ maxWidth: "76%" }}>
+                        {!memeAuteur && (
+                          <div style={{ fontSize: 10.5, color: C.mutedSoft, marginBottom: 3, textAlign: deMoi ? "right" : "left" }}>
+                            {deMoi ? "Moi" : nomDe(m.auteur_id)} · {new Date(m.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                        )}
+                        <div className="flex items-end gap-1.5" style={{ flexDirection: deMoi ? "row-reverse" : "row" }}>
+                          <div style={{ background: deMoi ? C.ink : C.canvas, color: deMoi ? "#fff" : C.text, borderRadius: 11, padding: "8px 12px", fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                            {m.contenu}
+                          </div>
+                          {deMoi && (
+                            <button onClick={() => supprimer(m.id)} title="Supprimer mon message"
+                              style={{ background: "none", border: "none", padding: 2, opacity: 0.45 }}>
+                              <Trash2 size={11} color={C.muted} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={finRef} />
+              </div>
+            )}
+          </div>
+
+          <form onSubmit={envoyer} className="flex items-center gap-2" style={{ padding: 12, borderTop: `1px solid ${C.borderSoft}` }}>
+            <input value={texte} onChange={(ev) => setTexte(ev.target.value)} maxLength={2000}
+              placeholder={canal.type === "direct" ? `Message à ${titreCanal}…` : `Message dans ${titreCanal}…`}
+              style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 9, padding: "10px 12px", fontSize: 13 }} />
+            <button type="submit" disabled={envoi || !texte.trim()}
+              style={{ background: texte.trim() ? C.amber : C.border, color: C.ink, border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+              {envoi ? <Loader2 size={12} className="animate-spin" /> : <ArrowRight size={13} />} Envoyer
+            </button>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }
