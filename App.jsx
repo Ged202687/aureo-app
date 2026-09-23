@@ -7,7 +7,7 @@ import {
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award, TrendingUp,
-  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink, Smile, Reply,
+  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink, Smile, Reply, Volume2, VolumeX,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -776,6 +776,20 @@ function Workspace({ session, onLogout, onProfilChange }) {
   // messages arrives depuis ma derniere lecture. La RLS fait le tri, je ne
   // compte donc que ce que j'ai le droit de lire.
   const [nonLus, setNonLus] = useState(0);
+  const [sonActif, setSonActif] = useState(() => {
+    try { return localStorage.getItem("aureo_son_messagerie") !== "0"; } catch { return true; }
+  });
+  const sonActifRef = useRef(sonActif);
+  useEffect(() => {
+    sonActifRef.current = sonActif;
+    try { localStorage.setItem("aureo_son_messagerie", sonActif ? "1" : "0"); } catch {}
+  }, [sonActif]);
+
+  // Le total precedent, pour ne sonner que sur une hausse. Null au premier
+  // passage : on ne carillonne pas au chargement de la page pour des messages
+  // deja en attente depuis la veille.
+  const nonLusPrecedentRef = useRef(null);
+
   const compterNonLus = useCallback(async () => {
     try {
       const [ligne] = await supaRest(`lectures_chat?select=lu_jusqu_a&canal=eq.global&agent_id=eq.${session.user.id}`, { accessToken });
@@ -784,10 +798,13 @@ function Workspace({ session, onLogout, onProfilChange }) {
       // encodage la requete part en 400, l'erreur est avalee, et la pastille
       // reste figee sur son dernier total.
       const depuis = ligne?.lu_jusqu_a || new Date(0).toISOString();
-      setNonLus(await supaCount(`messages_chat?select=id&created_at=gt.${encodeURIComponent(depuis)}&auteur_id=neq.${session.user.id}`, accessToken));
+      const total = await supaCount(`messages_chat?select=id&created_at=gt.${encodeURIComponent(depuis)}&auteur_id=neq.${session.user.id}`, accessToken);
+      setNonLus(total);
+      if (nonLusPrecedentRef.current !== null && total > nonLusPrecedentRef.current && sonActifRef.current) jouerCarillon();
+      nonLusPrecedentRef.current = total;
     } catch {}
   }, [accessToken, session.user.id]);
-  useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 60000); return () => clearInterval(t); }, [compterNonLus]);
+  useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 30000); return () => clearInterval(t); }, [compterNonLus]);
   const elapsed = useElapsed(connectedAt);
   const [statutBusy, setStatutBusy] = useState(false);
   const [pauseTypes, setPauseTypes] = useState([]);
@@ -988,7 +1005,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
               {adminTab === "analytics" && effectiveTabs.has("analytics") && <AnalyticsPanel accessToken={accessToken} />}
-              {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} isSuperAdmin={isSuperAdmin} />}
+              {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} isSuperAdmin={isSuperAdmin} sonActif={sonActif} setSonActif={setSonActif} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -3787,6 +3804,36 @@ const EMOJIS = [
   { groupe: "Encouragements", liste: ["🎉", "🔥", "⭐", "💡", "✨", "🚀", "💯", "❤️", "🍀", "😎"] },
 ];
 
+// Deux notes breves, synthetisees a la volee : pas de fichier audio a
+// embarquer ni a charger, et rien a maintenir. Le navigateur refuse de jouer
+// un son avant la premiere interaction de l'utilisateur ; sur un poste
+// d'agent cette condition est remplie des le premier clic, et l'echec est
+// silencieux dans le cas contraire.
+let contexteAudio = null;
+function jouerCarillon() {
+  try {
+    const Contexte = window.AudioContext || window.webkitAudioContext;
+    if (!Contexte) return;
+    contexteAudio = contexteAudio || new Contexte();
+    if (contexteAudio.state === "suspended") contexteAudio.resume();
+    const t0 = contexteAudio.currentTime;
+    [880, 1174.7].forEach((frequence, i) => {
+      const osc = contexteAudio.createOscillator();
+      const gain = contexteAudio.createGain();
+      osc.type = "sine";
+      osc.frequency.value = frequence;
+      const debut = t0 + i * 0.12;
+      gain.gain.setValueAtTime(0, debut);
+      gain.gain.linearRampToValueAtTime(0.12, debut + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, debut + 0.22);
+      osc.connect(gain);
+      gain.connect(contexteAudio.destination);
+      osc.start(debut);
+      osc.stop(debut + 0.25);
+    });
+  } catch {}
+}
+
 // Cle de conversation, cote client comme en base : 'general', 'equipe:<id>'
 // ou 'direct:<id de l'interlocuteur>'.
 function cleCanal(c) {
@@ -3794,7 +3841,7 @@ function cleCanal(c) {
   return c.type === "general" ? "general" : `${c.type}:${c.id}`;
 }
 
-function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
+function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, setSonActif }) {
   // Reglage general : la messagerie peut etre coupee aux agents pendant
   // qu'ils sont en Production. La base applique la regle, l'interface se
   // contente de l'expliquer plutot que d'afficher un ecran vide.
@@ -4067,11 +4114,28 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
 
   return (
     <div>
-      <header className="mb-5">
-        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Messagerie</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
-          Le canal général et celui de votre équipe, et des messages directs avec n'importe quel collègue.
-        </p>
+      <header className="mb-5 flex items-start justify-between">
+        <div>
+          <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Messagerie</h1>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+            Le canal général et celui de votre équipe, et des messages directs avec n'importe quel collègue.
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5" style={{ flexShrink: 0 }}>
+          <button onClick={() => { if (!sonActif) jouerCarillon(); setSonActif(!sonActif); }}
+            title={sonActif ? "Couper le son des nouveaux messages" : "Être prévenu par un son"}
+            className="flex items-center gap-2"
+            style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 12px", fontSize: 12, fontWeight: 600, color: sonActif ? C.text : C.mutedSoft }}>
+            {sonActif ? <Volume2 size={14} color={C.teal} /> : <VolumeX size={14} color={C.mutedSoft} />}
+            {sonActif ? "Son activé" : "Son coupé"}
+          </button>
+          {sonActif && (
+            <button onClick={jouerCarillon} title="Écouter le son"
+              style={{ background: "none", border: "none", padding: 6, fontSize: 11.5, color: C.mutedSoft, textDecoration: "underline" }}>
+              Écouter
+            </button>
+          )}
+        </div>
       </header>
 
       {isSuperAdmin && coupeEnProd !== null && (
