@@ -3596,6 +3596,14 @@ function ExportPanel({ accessToken }) {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // Les criteres tels qu'ils etaient au moment de la recherche. Si l'on touche
+  // un filtre ensuite, les resultats affiches ne correspondent plus a l'ecran :
+  // on le signale et on bloque l'export, sinon on exporterait "Campagne A"
+  // en croyant exporter "Campagne B".
+  const [criteresRecherche, setCriteresRecherche] = useState(null);
+  const criteres = { dateStart, dateEnd, campagneId, lotId, categorieFiltre, motifFiltre };
+  const perime = criteresRecherche !== null && JSON.stringify(criteres) !== JSON.stringify(criteresRecherche);
+
   useEffect(() => {
     (async () => {
       try {
@@ -3614,7 +3622,8 @@ function ExportPanel({ accessToken }) {
   const motifsDisponibles = typesQualif ? typesQualif.filter((t) => !categorieFiltre || t.categorie === categorieFiltre) : [];
 
   async function loadPreview() {
-    setLoading(true); setError(null); setRows(null);
+    const figes = { ...criteres };
+    setLoading(true); setError(null); setRows(null); setCriteresRecherche(null);
     try {
       const start = new Date(dateStart + "T00:00:00");
       const end = new Date(new Date(dateEnd + "T00:00:00").getTime() + 24 * 3600 * 1000);
@@ -3622,12 +3631,30 @@ function ExportPanel({ accessToken }) {
       let lotIdsFiltre = null;
       if (lotId) lotIdsFiltre = [lotId];
       else if (campagneId) lotIdsFiltre = (lots || []).filter((l) => l.campagne_id === campagneId).map((l) => l.id);
+      if (lotIdsFiltre && lotIdsFiltre.length === 0) { setRows([]); setCriteresRecherche(figes); return; }
 
-      const qualifs = await fetchPaged(
-        `qualifications?select=id,client_id,agent_id,commentaire,created_at,duree_secondes,types_qualification(categorie,motif,est_contact,est_vente)&created_at=gte.${start.toISOString()}&created_at=lt.${end.toISOString()}&order=created_at.desc,id.asc`,
-        accessToken
-      );
-      if (qualifs.length === 0) { setRows([]); setLoading(false); return; }
+      // Filtres poses cote serveur, mais seulement ceux qui allegent la
+      // requete. Mesure a l'appui :
+      //   - la categorie et le motif filtrent sur une petite table : "A
+      //     rappeler" sur une semaine passe de 28 pages et 30 s a 6 pages et 7 s ;
+      //   - embarquer le client complet dans chaque ligne, en revanche, avait
+      //     rendu l'export sans filtre 45 % plus lent (44 s au lieu de 30) : la
+      //     pagination par decalage recalcule a chaque page toutes les lignes
+      //     precedentes, et chacune coutait alors une jointure de plus.
+      // Le client reste donc lu a part, et la jointure sur clients n'est posee
+      // que pour filtrer par lot, reduite a la seule colonne lot_id.
+      const tq = categorieFiltre || motifFiltre ? "types_qualification!inner" : "types_qualification";
+      let chemin = `qualifications?select=id,client_id,agent_id,commentaire,created_at,duree_secondes,`
+        + `${tq}(categorie,motif,est_contact,est_vente)`
+        + (lotIdsFiltre ? ",clients!inner(lot_id)" : "")
+        + `&created_at=gte.${encodeURIComponent(start.toISOString())}&created_at=lt.${encodeURIComponent(end.toISOString())}`;
+      if (categorieFiltre) chemin += `&types_qualification.categorie=eq.${encodeURIComponent(categorieFiltre)}`;
+      if (motifFiltre) chemin += `&types_qualification.motif=eq.${encodeURIComponent(motifFiltre)}`;
+      if (lotIdsFiltre) chemin += `&clients.lot_id=in.(${lotIdsFiltre.join(",")})`;
+      chemin += "&order=created_at.desc,id.asc";
+
+      const qualifs = await fetchPaged(chemin, accessToken);
+      if (qualifs.length === 0) { setRows([]); setCriteresRecherche(figes); return; }
 
       const clientIds = [...new Set(qualifs.map((q) => q.client_id))];
       const agentIds = [...new Set(qualifs.map((q) => q.agent_id).filter(Boolean))];
@@ -3637,25 +3664,28 @@ function ExportPanel({ accessToken }) {
         agentIds.length > 0 ? fetchInChunks(`profils?select=id,nom&id=in.(`, agentIds, accessToken) : Promise.resolve([]),
       ]);
 
+      // Tables d'index plutot qu'une recherche lineaire dans la boucle : sur
+      // une semaine, c'etait 26 000 x 20 000 comparaisons dans le navigateur.
+      const parClient = new Map(clients.map((c) => [c.id, c]));
+      const nomsAgents = new Map(profils.map((a) => [a.id, a.nom]));
+
       const merged = qualifs.map((q) => {
-        const c = clients.find((cl) => cl.id === q.client_id);
+        const { clients: _jointure, ...reste } = q;   // colonne de jointure, inutile a l'affichage
         return {
-          ...q,
-          client: c || null,
-          agentNom: profils.find((p) => p.id === q.agent_id)?.nom || "—",
+          ...reste,
+          client: parClient.get(q.client_id) || null,
+          agentNom: nomsAgents.get(q.agent_id) || "—",
         };
-      }).filter((r) => {
-        if (lotIdsFiltre && !(r.client && lotIdsFiltre.includes(r.client.lot_id))) return false;
-        if (categorieFiltre && r.types_qualification?.categorie !== categorieFiltre) return false;
-        if (motifFiltre && r.types_qualification?.motif !== motifFiltre) return false;
-        return true;
       });
 
       setRows(merged);
+      setCriteresRecherche(figes);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
-  useEffect(() => { loadPreview(); }, [dateStart, dateEnd, campagneId, lotId, categorieFiltre, motifFiltre]); // eslint-disable-line
+  // Plus de recherche automatique a chaque changement de filtre : sur un mois,
+  // chaque clic dans une liste deroulante ramenait plus de 60 000
+  // qualifications. On choisit ses criteres, puis on lance la recherche.
 
   function exportExcel() {
     setExporting(true);
@@ -3681,7 +3711,7 @@ function ExportPanel({ accessToken }) {
       const ws = XLSX.utils.json_to_sheet(data);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Export");
-      XLSX.writeFile(wb, `aureo_export_${dateStart}_${dateEnd}.xlsx`);
+      XLSX.writeFile(wb, `aureo_export_${criteresRecherche.dateStart}_${criteresRecherche.dateEnd}.xlsx`);
     } finally { setExporting(false); }
   }
 
@@ -3689,7 +3719,7 @@ function ExportPanel({ accessToken }) {
     <div>
       <header className="mb-6">
         <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Export des données traitées</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Choisissez une période, puis affinez par campagne ou par lot.</p>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Choisissez vos critères, lancez la recherche, vérifiez le résultat, puis exportez.</p>
       </header>
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 20, maxWidth: 760 }}>
@@ -3745,18 +3775,38 @@ function ExportPanel({ accessToken }) {
 
       {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
 
-      <div className="flex items-center justify-between mb-4" style={{ maxWidth: 760 }}>
-        <span style={{ fontSize: 13, color: C.muted }}>
-          {loading ? "Recherche en cours…" : rows === null ? "" : `${rows.length} fiche${rows.length !== 1 ? "s" : ""} traitée${rows.length !== 1 ? "s" : ""} sur la période`}
+      <div className="flex items-center gap-3 mb-4" style={{ maxWidth: 760 }}>
+        <button onClick={loadPreview} disabled={loading}
+          style={{ display: "flex", alignItems: "center", gap: 7, background: C.amber, color: C.ink, border: "none", borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>
+          {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />} Rechercher
+        </button>
+
+        <span style={{ fontSize: 12.5, color: perime ? C.amber : C.muted, flex: 1, minWidth: 0, fontWeight: perime ? 600 : 400 }}>
+          {loading ? "Recherche en cours…"
+            : rows === null ? "Choisissez vos critères puis lancez la recherche."
+            : perime ? "Les critères ont changé depuis la recherche — relancez-la avant d'exporter."
+            : `${rows.length.toLocaleString("fr-FR")} fiche${rows.length !== 1 ? "s" : ""} traitée${rows.length !== 1 ? "s" : ""}`}
         </span>
-        <button onClick={exportExcel} disabled={!rows || rows.length === 0 || exporting}
-          style={{ display: "flex", alignItems: "center", gap: 6, background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12.5, fontWeight: 600 }}>
+
+        <button onClick={exportExcel} disabled={!rows || rows.length === 0 || exporting || perime || loading}
+          title={perime ? "Relancez la recherche : les résultats ne correspondent plus aux critères affichés" : undefined}
+          style={{ display: "flex", alignItems: "center", gap: 6, background: !rows || rows.length === 0 || perime ? C.border : C.ink, color: !rows || rows.length === 0 || perime ? C.mutedSoft : "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 12.5, fontWeight: 600, flexShrink: 0 }}>
           {exporting ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />} Exporter Excel
         </button>
       </div>
 
+      {rows !== null && !perime && criteresRecherche && (
+        <p style={{ fontSize: 11.5, color: C.mutedSoft, marginTop: -8, marginBottom: 14, maxWidth: 760 }}>
+          Du {new Date(criteresRecherche.dateStart + "T00:00:00").toLocaleDateString("fr-FR")} au {new Date(criteresRecherche.dateEnd + "T00:00:00").toLocaleDateString("fr-FR")}
+          {" · "}{criteresRecherche.campagneId ? (campagnes || []).find((c) => c.id === criteresRecherche.campagneId)?.nom : "toutes les campagnes"}
+          {criteresRecherche.lotId ? ` · lot ${(lots || []).find((l) => l.id === criteresRecherche.lotId)?.nom}` : ""}
+          {" · "}{criteresRecherche.categorieFiltre || "toutes les catégories"}
+          {criteresRecherche.motifFiltre ? ` · ${criteresRecherche.motifFiltre}` : ""}
+        </p>
+      )}
+
       {rows && rows.length > 0 && (
-        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto", maxHeight: 460 }}>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto", maxHeight: 460, opacity: perime ? 0.4 : 1, transition: "opacity 0.15s" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: C.canvas, textAlign: "left" }}>
