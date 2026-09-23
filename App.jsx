@@ -984,7 +984,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
               {adminTab === "analytics" && effectiveTabs.has("analytics") && <AnalyticsPanel accessToken={accessToken} />}
-              {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} />}
+              {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} isSuperAdmin={isSuperAdmin} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -3776,7 +3776,22 @@ function cleCanal(c) {
   return c.type === "general" ? "general" : `${c.type}:${c.id}`;
 }
 
-function Messagerie({ accessToken, moi, moiId, onLu }) {
+function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin }) {
+  // Reglage general : la messagerie peut etre coupee aux agents pendant
+  // qu'ils sont en Production. La base applique la regle, l'interface se
+  // contente de l'expliquer plutot que d'afficher un ecran vide.
+  const [coupeEnProd, setCoupeEnProd] = useState(null);
+  const [bascule, setBascule] = useState(false);
+
+  const chargerReglage = useCallback(async () => {
+    try {
+      const [ligne] = await supaRest("parametres?select=valeur&cle=eq.chat_coupe_en_production", { accessToken });
+      setCoupeEnProd(ligne?.valeur === true);
+    } catch { setCoupeEnProd(false); }
+  }, [accessToken]);
+  useEffect(() => { chargerReglage(); }, [chargerReglage]);
+
+  const bloque = coupeEnProd === true && moi?.role === "agent" && moi?.statut === "en_prod";
   // Pas d'annuaire complet cote navigateur : on ne detient que les
   // conversations engagees, les resultats de la recherche en cours, et les
   // noms des auteurs des messages affiches.
@@ -3919,6 +3934,33 @@ function Messagerie({ accessToken, moi, moiId, onLu }) {
 
   const ROLE_COURT = { super_admin: "Super admin", admin: "Admin", superviseur: "Superviseur", coach: "Coach", agent: "Agent" };
 
+  async function basculerReglage() {
+    setBascule(true);
+    try {
+      await supaRest("parametres?cle=eq.chat_coupe_en_production", { method: "PATCH", accessToken, body: { valeur: !coupeEnProd, maj_le: new Date().toISOString() } });
+      await chargerReglage();
+    } catch (e) { setError(e.message); } finally { setBascule(false); }
+  }
+
+  if (bloque) {
+    return (
+      <div>
+        <header className="mb-5">
+          <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Messagerie</h1>
+        </header>
+        <div className="flex items-start gap-3" style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, padding: 18, maxWidth: 620 }}>
+          <Lock size={18} color={C.amber} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 4 }}>Messagerie indisponible en Production</div>
+            <p style={{ fontSize: 12.5, color: C.ink, lineHeight: 1.5 }}>
+              Elle revient dès que vous passez en pause, avec tous les messages reçus entre-temps — rien n'est perdu.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (conversations === null) return <CenterLoader />;
 
   const Entree = ({ actif, onClick, icone: Ico, libelle, detail }) => (
@@ -3940,6 +3982,27 @@ function Messagerie({ accessToken, moi, moiId, onLu }) {
           Le canal général et celui de votre équipe, et des messages directs avec n'importe quel collègue.
         </p>
       </header>
+
+      {isSuperAdmin && coupeEnProd !== null && (
+        <div className="flex items-center gap-3 mb-4" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", maxWidth: 620 }}>
+          <button onClick={basculerReglage} disabled={bascule}
+            title={coupeEnProd ? "Rendre la messagerie accessible en Production" : "Couper la messagerie aux agents en Production"}
+            style={{ position: "relative", width: 38, height: 21, borderRadius: 999, border: "none", padding: 0, flexShrink: 0, background: coupeEnProd ? C.amber : C.border, transition: "background 0.15s" }}>
+            <span style={{ position: "absolute", top: 2, left: coupeEnProd ? 19 : 2, width: 17, height: 17, borderRadius: 999, background: "#fff", transition: "left 0.15s" }} />
+          </button>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+              {coupeEnProd ? "Coupée aux agents en Production" : "Accessible à tout moment"}
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+              {coupeEnProd
+                ? "Un agent en Production ne voit ni n'envoie de message ; il retrouve tout en pause. Coachs, superviseurs et administration ne sont pas concernés."
+                : "Les agents peuvent échanger même pendant leurs appels."}
+            </div>
+          </div>
+          {bascule && <Loader2 size={13} className="animate-spin" color={C.muted} />}
+        </div>
+      )}
 
       {error && <div className="mb-3"><ErrorBlock message={error} /></div>}
 
