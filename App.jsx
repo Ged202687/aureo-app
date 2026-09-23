@@ -790,20 +790,21 @@ function Workspace({ session, onLogout, onProfilChange }) {
   // deja en attente depuis la veille.
   const nonLusPrecedentRef = useRef(null);
 
+  // Un total par conversation, agrege en base : le compter cote navigateur
+  // obligerait a rapatrier les messages pour n'en garder qu'un nombre.
+  const [nonLusParCanal, setNonLusParCanal] = useState({});
   const compterNonLus = useCallback(async () => {
     try {
-      const [ligne] = await supaRest(`lectures_chat?select=lu_jusqu_a&canal=eq.global&agent_id=eq.${session.user.id}`, { accessToken });
-      // encodeURIComponent obligatoire : la base renvoie l'horodatage avec son
-      // fuseau (...+00:00), et un "+" dans une URL vaut un espace. Sans cet
-      // encodage la requete part en 400, l'erreur est avalee, et la pastille
-      // reste figee sur son dernier total.
-      const depuis = ligne?.lu_jusqu_a || new Date(0).toISOString();
-      const total = await supaCount(`messages_chat?select=id&created_at=gt.${encodeURIComponent(depuis)}&auteur_id=neq.${session.user.id}`, accessToken);
+      const lignes = await rpc("non_lus_par_canal", accessToken, {});
+      const parCanal = {};
+      let total = 0;
+      for (const l of lignes || []) { parCanal[l.canal] = Number(l.total); total += Number(l.total); }
+      setNonLusParCanal(parCanal);
       setNonLus(total);
       if (nonLusPrecedentRef.current !== null && total > nonLusPrecedentRef.current && sonActifRef.current) jouerCarillon();
       nonLusPrecedentRef.current = total;
     } catch {}
-  }, [accessToken, session.user.id]);
+  }, [accessToken]);
   useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 30000); return () => clearInterval(t); }, [compterNonLus]);
   const elapsed = useElapsed(connectedAt);
   const [statutBusy, setStatutBusy] = useState(false);
@@ -1005,7 +1006,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
               {adminTab === "analytics" && effectiveTabs.has("analytics") && <AnalyticsPanel accessToken={accessToken} />}
-              {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} isSuperAdmin={isSuperAdmin} sonActif={sonActif} setSonActif={setSonActif} />}
+              {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} isSuperAdmin={isSuperAdmin} sonActif={sonActif} setSonActif={setSonActif} nonLusParCanal={nonLusParCanal} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
               {adminTab === "recherche" && effectiveTabs.has("recherche") && <SearchPanel accessToken={accessToken} tree={tree} isAdmin={isAdmin} />}
               {adminTab === "presence" && effectiveTabs.has("presence") && <PresencePanel accessToken={accessToken} />}
@@ -3841,7 +3842,7 @@ function cleCanal(c) {
   return c.type === "general" ? "general" : `${c.type}:${c.id}`;
 }
 
-function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, setSonActif }) {
+function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, setSonActif, nonLusParCanal = {} }) {
   // Reglage general : la messagerie peut etre coupee aux agents pendant
   // qu'ils sont en Production. La base applique la regle, l'interface se
   // contente de l'expliquer plutot que d'afficher un ecran vide.
@@ -3999,11 +4000,13 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
   const marquerLu = useCallback(async () => {
     const maintenant = new Date().toISOString();
     try {
+      // Seule la conversation ouverte est marquee lue : marquer un repere
+      // global revenait a effacer les messages recus ailleurs pendant ce
+      // temps, sans que personne n'en soit averti.
       await supaRest("lectures_chat?on_conflict=agent_id,canal", {
         method: "POST", accessToken,
         prefer: "resolution=merge-duplicates,return=minimal",
-        body: [{ agent_id: moiId, canal: cleCanal(canal), lu_jusqu_a: maintenant },
-               { agent_id: moiId, canal: "global", lu_jusqu_a: maintenant }],
+        body: [{ agent_id: moiId, canal: cleCanal(canal), lu_jusqu_a: maintenant }],
       });
       onLu && onLu();
     } catch {}
@@ -4101,16 +4104,24 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
 
   if (conversations === null) return <CenterLoader />;
 
-  const Entree = ({ actif, onClick, icone: Ico, libelle, detail }) => (
-    <button onClick={onClick} className="flex items-center gap-2"
-      style={{ width: "100%", textAlign: "left", background: actif ? C.canvas : "transparent", border: "none", borderRadius: 8, padding: "8px 10px" }}>
-      <Ico size={14} color={actif ? C.ink : C.mutedSoft} style={{ flexShrink: 0 }} />
-      <span style={{ minWidth: 0, flex: 1 }}>
-        <span style={{ display: "block", fontSize: 12.5, fontWeight: actif ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{libelle}</span>
-        {detail && <span style={{ display: "block", fontSize: 10.5, color: C.mutedSoft }}>{detail}</span>}
-      </span>
-    </button>
-  );
+  const Entree = ({ actif, onClick, icone: Ico, libelle, detail, cle }) => {
+    const nonLus = (cle && nonLusParCanal[cle]) || 0;
+    return (
+      <button onClick={onClick} className="flex items-center gap-2"
+        style={{ width: "100%", textAlign: "left", background: actif ? C.canvas : "transparent", border: "none", borderRadius: 8, padding: "8px 10px" }}>
+        <Ico size={14} color={actif ? C.ink : C.mutedSoft} style={{ flexShrink: 0 }} />
+        <span style={{ minWidth: 0, flex: 1 }}>
+          <span style={{ display: "block", fontSize: 12.5, fontWeight: nonLus > 0 || actif ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{libelle}</span>
+          {detail && <span style={{ display: "block", fontSize: 10.5, color: C.mutedSoft }}>{detail}</span>}
+        </span>
+        {nonLus > 0 && (
+          <span className="mono" style={{ flexShrink: 0, background: C.amber, color: C.ink, borderRadius: 999, padding: "1px 7px", fontSize: 10.5, fontWeight: 700 }}>
+            {nonLus > 99 ? "99+" : nonLus}
+          </span>
+        )}
+      </button>
+    );
+  };
 
   return (
     <div>
@@ -4163,14 +4174,14 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
 
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16, alignItems: "start" }}>
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, maxHeight: 620, overflowY: "auto" }}>
-          <Entree actif={canal.type === "general"} onClick={() => setCanal({ type: "general" })} icone={Megaphone} libelle="Général" detail="Tout le plateau" />
+          <Entree actif={canal.type === "general"} onClick={() => setCanal({ type: "general" })} icone={Megaphone} libelle="Général" detail="Tout le plateau" cle="general" />
 
           {equipes.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <div style={{ fontSize: 10, color: C.mutedSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", padding: "6px 10px" }}>Équipes</div>
               {equipes.map((e) => (
                 <Entree key={e.id} actif={canal.type === "equipe" && canal.id === e.id} onClick={() => setCanal({ type: "equipe", id: e.id })}
-                  icone={UsersRound} libelle={e.nom} detail={e.est_la_mienne ? "Mon équipe" : null} />
+                  icone={UsersRound} libelle={e.nom} detail={e.est_la_mienne ? "Mon équipe" : null} cle={`equipe:${e.id}`} />
               ))}
             </div>
           )}
@@ -4188,7 +4199,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
               ) : (
                 resultats.map((p) => (
                   <Entree key={p.id} actif={canal.type === "direct" && canal.id === p.id} onClick={() => { setCanal({ type: "direct", id: p.id }); setRecherche(""); }}
-                    icone={UserCircle2} libelle={p.nom} detail={`${ROLE_COURT[p.role] || p.role}${p.equipe_nom ? " · " + p.equipe_nom : ""}`} />
+                    icone={UserCircle2} libelle={p.nom} detail={`${ROLE_COURT[p.role] || p.role}${p.equipe_nom ? " · " + p.equipe_nom : ""}`} cle={`direct:${p.id}`} />
                 ))
               )
             ) : recherche.trim().length === 1 ? (
@@ -4200,7 +4211,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
             ) : (
               conversations.map((p) => (
                 <Entree key={p.id} actif={canal.type === "direct" && canal.id === p.id} onClick={() => setCanal({ type: "direct", id: p.id })}
-                  icone={UserCircle2} libelle={p.nom} detail={`${ROLE_COURT[p.role] || p.role}${p.equipe_nom ? " · " + p.equipe_nom : ""}`} />
+                  icone={UserCircle2} libelle={p.nom} detail={`${ROLE_COURT[p.role] || p.role}${p.equipe_nom ? " · " + p.equipe_nom : ""}`} cle={`direct:${p.id}`} />
               ))
             )}
           </div>
