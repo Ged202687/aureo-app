@@ -7,7 +7,7 @@ import {
   Building2, Phone, Mail, StickyNote, Users, Timer, Archive, CircleDot,
   LogOut, Loader2, AlertTriangle, Lock, Search, History, BellRing, PlayCircle,
   PauseCircle, PowerOff, RotateCcw, Hash, Megaphone, UsersRound, Check, X, Key, RefreshCw, ChevronUp, ChevronDown, Award, TrendingUp,
-  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink, Smile, Reply, Volume2, VolumeX,
+  PhoneCall, PhoneMissed, Voicemail, ThumbsUp, ThumbsDown, Ban, Wrench, CalendarClock, MessageSquare, UserX, Star, Zap, HelpCircle, Moon, ShoppingCart, ExternalLink, Smile, Reply, Volume2, VolumeX, Activity, ClipboardCheck,
 } from "lucide-react";
 
 /* ---------------------------------- Supabase (REST, sans SDK) ---------------------------------- */
@@ -773,15 +773,17 @@ function useElapsed(since) {
 }
 
 const ROLE_DEFAULT_TABS = {
-  super_admin: ["dashboard", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
-  admin: ["dashboard", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
-  superviseur: ["dashboard", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export"],
-  coach: ["poste", "dashboard", "resultats", "analytics", "messagerie", "export"],
-  agent: ["poste", "resultats", "analytics", "messagerie"],
+  super_admin: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
+  admin: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
+  superviseur: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export"],
+  coach: ["poste", "dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "export"],
+  agent: ["poste", "resultats", "qualite", "analytics", "messagerie"],
 };
 const TAB_DEFS = [
   { id: "poste", label: "Poste de travail", icon: Inbox },
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "supervision", label: "Supervision", icon: Activity },
+  { id: "qualite", label: "Qualité", icon: ClipboardCheck },
   { id: "resultats", label: "Mes résultats", icon: Award },
   { id: "analytics", label: "Analytics", icon: TrendingUp },
   { id: "messagerie", label: "Messagerie", icon: MessageSquare },
@@ -841,6 +843,15 @@ function Workspace({ session, onLogout, onProfilChange }) {
     } catch {}
   }, [accessToken]);
   useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 30000); return () => clearInterval(t); }, [compterNonLus]);
+
+  // Pastille de l'onglet Qualite : evaluations non lues (agent), contestations
+  // a trancher (superviseur, admin). Toutes les 2 minutes suffisent, rien
+  // n'y est urgent a la seconde.
+  const [qcCompteurs, setQcCompteurs] = useState({ non_lues: 0, contestations: 0 });
+  const chargerQcCompteurs = useCallback(async () => {
+    try { const r = await rpc("qc_compteurs", accessToken, {}); if (r) setQcCompteurs(r); } catch {}
+  }, [accessToken]);
+  useEffect(() => { chargerQcCompteurs(); const t = setInterval(chargerQcCompteurs, 120000); return () => clearInterval(t); }, [chargerQcCompteurs]);
   const elapsed = useElapsed(connectedAt);
   const [statutBusy, setStatutBusy] = useState(false);
   const [pauseTypes, setPauseTypes] = useState([]);
@@ -965,8 +976,8 @@ function Workspace({ session, onLogout, onProfilChange }) {
 
             <nav className="px-3 pt-5 flex flex-col gap-1">
               {TAB_DEFS.filter((t) => effectiveTabs.has(t.id)).map((t) => (
-                <NavItem key={t.id} icon={t.icon} label={t.label} active={adminTab === t.id} onClick={() => setAdminTab(t.id)}
-                  pastille={t.id === "messagerie" ? nonLus : 0} />
+                <NavItem key={t.id} icon={t.icon} label={t.id === "qualite" && role === "agent" ? "Mes évaluations" : t.label} active={adminTab === t.id} onClick={() => setAdminTab(t.id)}
+                  pastille={t.id === "messagerie" ? nonLus : t.id === "qualite" ? (role === "agent" ? qcCompteurs.non_lues : qcCompteurs.contestations) : 0} />
               ))}
             </nav>
           </div>
@@ -1039,6 +1050,8 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <>
               {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
+              {adminTab === "supervision" && effectiveTabs.has("supervision") && <SupervisionPanel accessToken={accessToken} callerRole={profil?.role} />}
+              {adminTab === "qualite" && effectiveTabs.has("qualite") && <QualitePanel accessToken={accessToken} role={role === "agent" ? "agent" : profil?.role} moiId={session.user.id} onCompteurs={chargerQcCompteurs} compteurs={qcCompteurs} />}
               {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
               {adminTab === "analytics" && effectiveTabs.has("analytics") && <AnalyticsPanel accessToken={accessToken} />}
               {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} isSuperAdmin={isSuperAdmin} sonActif={sonActif} setSonActif={setSonActif} nonLusParCanal={nonLusParCanal} />}
@@ -2548,6 +2561,1523 @@ function LiveStatusPanel({ accessToken, callerRole }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------------------------- supervision ---------------------------------- */
+
+// Valeurs de repli tant que supervision_seuils n'a pas repondu : les memes que
+// la ligne par defaut en base.
+const SEUILS_SUPERVISION_DEFAUT = { appel_long_minutes: 10, inactivite_minutes: 5 };
+
+const ORDRE_STATUT_SUPERVISION = { en_prod: 0, en_pause: 1, deconnecte: 2 };
+
+// "1 h 05", "12 min", "45 s" : pour les libelles d'alerte.
+function dureeLisible(sec) {
+  if (sec === null || sec === undefined || !isFinite(sec)) return "—";
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return `${sec} s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)} min`;
+  return `${Math.floor(sec / 3600)} h ${String(Math.floor((sec % 3600) / 60)).padStart(2, "0")}`;
+}
+
+// "04:12" ou "1:04:12" : pour les chronometres qui tournent.
+function chrono(sec) {
+  if (sec === null || sec === undefined || !isFinite(sec)) return "—";
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const mmss = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return h > 0 ? `${h}:${mmss}` : mmss;
+}
+
+function ecoule(depuis, maintenant) {
+  return depuis ? (maintenant - new Date(depuis).getTime()) / 1000 : null;
+}
+
+// Les alertes sont calculees dans le navigateur, a chaque seconde, a partir de
+// l'etat recu : une pause franchit sa limite entre deux rafraichissements, et
+// l'alerte doit tomber a ce moment-la, pas jusqu'a 30 secondes plus tard.
+function alertesAgent(a, seuils, typesPause, maintenant) {
+  const alertes = [];
+  if (a.statut === "en_pause" && a.pause_debut) {
+    const t = typesPause.get(a.pause_type_id);
+    const duree = ecoule(a.pause_debut, maintenant);
+    if (t?.duree_max_minutes && duree > t.duree_max_minutes * 60) {
+      alertes.push({ code: "pause", texte: `${t.nom} : ${dureeLisible(duree)} (max ${t.duree_max_minutes} min)` });
+    }
+  }
+  for (const p of a.pauses_jour || []) {
+    const t = typesPause.get(p.type);
+    if (t?.occurrences_max_jour && p.n > t.occurrences_max_jour) {
+      alertes.push({ code: `quota:${p.type}`, texte: `${p.n} × ${t.nom} aujourd'hui (max ${t.occurrences_max_jour})` });
+    }
+  }
+  if (a.statut === "en_prod" && a.fiche_depuis) {
+    const duree = ecoule(a.fiche_depuis, maintenant);
+    if (duree > seuils.appel_long_minutes * 60) {
+      alertes.push({ code: "appel", texte: `Même fiche depuis ${dureeLisible(duree)}` });
+    }
+  }
+  if (a.statut === "en_prod" && !a.fiche_id) {
+    // Inactif depuis le plus recent de deux evenements : le passage en
+    // Production, ou la derniere qualification.
+    const refs = [a.statut_depuis, a.derniere_qualif_le].filter(Boolean).map((d) => new Date(d).getTime());
+    if (refs.length > 0) {
+      const duree = (maintenant - Math.max(...refs)) / 1000;
+      if (duree > seuils.inactivite_minutes * 60) {
+        alertes.push({ code: "inactif", texte: `En production sans fiche depuis ${dureeLisible(duree)}` });
+      }
+    }
+  }
+  if (a.fiches_en_cours > 1) {
+    alertes.push({ code: "bloquees", texte: `${a.fiches_en_cours} fiches en cours à son nom` });
+  }
+  return alertes;
+}
+
+function SupervisionPanel({ accessToken, callerRole }) {
+  const [agents, setAgents] = useState(null);
+  const [error, setError] = useState(null);
+  const [seuils, setSeuils] = useState(SEUILS_SUPERVISION_DEFAUT);
+  const [typesPause, setTypesPause] = useState(new Map());
+  const [majLe, setMajLe] = useState(null);
+  // Ecart entre l'horloge du serveur et celle du poste, mesure a chaque
+  // reponse. Les chronometres partent de l'heure serveur corrigee.
+  const decalageRef = useRef(0);
+  const [maintenant, setMaintenant] = useState(Date.now());
+
+  const [vue, setVue] = useState("mur");
+  const [equipe, setEquipe] = useState("");
+  const [recherche, setRecherche] = useState("");
+  const [alertesSeules, setAlertesSeules] = useState(false);
+  const [tri, setTri] = useState({ col: "fiches_jour", sens: -1 });
+
+  const peutRegler = callerRole === "admin" || callerRole === "super_admin";
+  const [reglageOuvert, setReglageOuvert] = useState(false);
+  const [brouillonSeuils, setBrouillonSeuils] = useState(SEUILS_SUPERVISION_DEFAUT);
+  const [enregistrement, setEnregistrement] = useState(false);
+
+  const [sonActif, setSonActif] = useState(() => {
+    try { return localStorage.getItem("aureo_son_supervision") !== "0"; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("aureo_son_supervision", sonActif ? "1" : "0"); } catch {}
+  }, [sonActif]);
+
+  const load = useCallback(async () => {
+    // Onglet masque : on ne consomme rien. Le rafraichissement reprend des
+    // que l'ecran redevient visible (ecouteur plus bas).
+    if (typeof document !== "undefined" && document.hidden) return;
+    try {
+      const rows = await rpc("supervision_direct", accessToken, {});
+      if (rows && rows[0]?.serveur_maintenant) {
+        decalageRef.current = new Date(rows[0].serveur_maintenant).getTime() - Date.now();
+      }
+      setAgents(rows || []);
+      setMajLe(Date.now());
+      setError(null);
+    } catch (e) { setError(e.message); }
+  }, [accessToken]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30000);
+    const auRetour = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", auRetour);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", auRetour); };
+  }, [load]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [s] = await supaRest("supervision_seuils?select=appel_long_minutes,inactivite_minutes&id=eq.1", { accessToken });
+        if (s) { setSeuils(s); setBrouillonSeuils(s); }
+      } catch {}
+      try {
+        // Tous les types, actifs ou non : une pause ouverte avant qu'un type
+        // soit desactive doit garder son nom a l'ecran.
+        const pts = await supaRest("pause_types?select=id,nom,couleur,duree_max_minutes,occurrences_max_jour", { accessToken });
+        setTypesPause(new Map(pts.map((p) => [p.id, p])));
+      } catch {}
+    })();
+  }, [accessToken]);
+
+  useEffect(() => {
+    const t = setInterval(() => setMaintenant(Date.now() + decalageRef.current), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const lignes = useMemo(() => (agents || []).map((a) => ({
+    ...a, alertes: alertesAgent(a, seuils, typesPause, maintenant),
+  })), [agents, seuils, typesPause, maintenant]);
+
+  // Carillon a l'apparition d'une alerte, pas tant qu'elle dure. Rien au
+  // premier chargement : les alertes deja en cours ne sont pas des nouvelles.
+  const alertesConnuesRef = useRef(null);
+  useEffect(() => {
+    if (!agents) return;
+    const cles = new Set(lignes.flatMap((a) => a.alertes.map((al) => `${a.agent_id}|${al.code}`)));
+    if (alertesConnuesRef.current !== null && sonActif) {
+      for (const k of cles) if (!alertesConnuesRef.current.has(k)) { jouerCarillon(); break; }
+    }
+    alertesConnuesRef.current = cles;
+  }, [lignes, agents, sonActif]);
+
+  const equipes = useMemo(() => [...new Set((agents || []).map((a) => a.equipe).filter(Boolean))].sort((a, b) => a.localeCompare(b)), [agents]);
+
+  const filtrees = useMemo(() => {
+    const q = recherche.trim().toLowerCase();
+    return lignes.filter((a) =>
+      (!equipe || a.equipe === equipe)
+      && (!q || a.nom?.toLowerCase().includes(q) || String(a.matricule || "").toLowerCase().includes(q))
+      && (!alertesSeules || a.alertes.length > 0));
+  }, [lignes, equipe, recherche, alertesSeules]);
+
+  // Indicateurs sur la selection affichee : filtrer une equipe donne les
+  // chiffres de cette equipe.
+  const kpi = useMemo(() => {
+    const k = { prod: 0, pause: 0, deco: 0, fiches: 0, contacts: 0, ventes: 0, secProd: 0, secPause: 0, dureeTotale: 0, dureeN: 0, alertes: 0 };
+    for (const a of filtrees) {
+      if (a.statut === "en_prod") k.prod++; else if (a.statut === "en_pause") k.pause++; else k.deco++;
+      k.fiches += a.fiches_jour; k.contacts += a.contacts_jour; k.ventes += a.ventes_jour;
+      k.secProd += a.secondes_prod; k.secPause += a.secondes_pause;
+      if (a.duree_moy_secondes !== null) { k.dureeTotale += a.duree_moy_secondes * a.fiches_jour; k.dureeN += a.fiches_jour; }
+      if (a.alertes.length > 0) k.alertes++;
+    }
+    return k;
+  }, [filtrees]);
+
+  async function enregistrerSeuils() {
+    setEnregistrement(true); setError(null);
+    try {
+      const r = await rpc("supervision_regler_seuils", accessToken, {
+        p_appel_long_minutes: Number(brouillonSeuils.appel_long_minutes),
+        p_inactivite_minutes: Number(brouillonSeuils.inactivite_minutes),
+      });
+      const ligne = Array.isArray(r) ? r[0] : r;
+      if (ligne) setSeuils({ appel_long_minutes: ligne.appel_long_minutes, inactivite_minutes: ligne.inactivite_minutes });
+      setReglageOuvert(false);
+    } catch (e) { setError(e.message); } finally { setEnregistrement(false); }
+  }
+
+  const actifs = filtrees.filter((a) => a.statut !== "deconnecte")
+    .sort((a, b) => (b.alertes.length > 0) - (a.alertes.length > 0)
+      || (ORDRE_STATUT_SUPERVISION[a.statut] ?? 3) - (ORDRE_STATUT_SUPERVISION[b.statut] ?? 3)
+      || a.nom.localeCompare(b.nom));
+  const deconnectes = filtrees.filter((a) => a.statut === "deconnecte").sort((a, b) => a.nom.localeCompare(b.nom));
+
+  const pct = (n, d) => (d > 0 ? `${Math.round((n / d) * 100)} %` : "—");
+  const parHeure = (fiches, sec) => (sec >= 600 ? (fiches / (sec / 3600)).toFixed(1).replace(".", ",") : "—");
+
+  return (
+    <div>
+      <div className="flex items-start justify-between mb-5" style={{ gap: 16 }}>
+        <div>
+          <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Supervision</h1>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+            L'activité de vos équipes en direct. Les alertes remontent en tête.
+          </p>
+        </div>
+        <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+          <span style={{ fontSize: 10.5, color: C.mutedSoft }}>
+            {majLe ? `Actualisé ${formatRelatif(new Date(majLe).toISOString())} · toutes les 30 s` : "Chargement…"}
+          </span>
+          <button onClick={() => setSonActif((v) => !v)} title={sonActif ? "Couper le son des alertes" : "Activer le son des alertes"}
+            style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 7, display: "flex" }}>
+            {sonActif ? <Volume2 size={14} color={C.text} /> : <VolumeX size={14} color={C.mutedSoft} />}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+
+      {!agents ? (
+        error ? null : <CenterLoader />
+      ) : (
+        <>
+          {/* ---- indicateurs du jour ---- */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
+            {[
+              { titre: "Présents", valeur: `${kpi.prod + kpi.pause}`, detail: `${kpi.prod} en production · ${kpi.pause} en pause` },
+              { titre: "Fiches traitées", valeur: kpi.fiches.toLocaleString("fr-FR"), detail: `${parHeure(kpi.fiches, kpi.secProd)} par heure de production` },
+              { titre: "Taux de contact", valeur: pct(kpi.contacts, kpi.fiches), detail: `${kpi.contacts.toLocaleString("fr-FR")} contacts` },
+              { titre: "Ventes", valeur: kpi.ventes.toLocaleString("fr-FR"), detail: `${pct(kpi.ventes, kpi.contacts)} des contacts` },
+              { titre: "Durée moy. de traitement", valeur: kpi.dureeN > 0 ? chrono(kpi.dureeTotale / kpi.dureeN) : "—", detail: "par fiche qualifiée" },
+              { titre: "Occupation", valeur: pct(kpi.secProd, kpi.secProd + kpi.secPause), detail: `${dureeLisible(kpi.secProd)} prod · ${dureeLisible(kpi.secPause)} pause` },
+              { titre: "Alertes", valeur: `${kpi.alertes}`, detail: kpi.alertes === 0 ? "rien à signaler" : `agent${kpi.alertes > 1 ? "s" : ""} à surveiller`, rouge: kpi.alertes > 0 },
+            ].map((c) => (
+              <div key={c.titre} style={{ background: c.rouge ? C.redSoft : C.surface, border: `1px solid ${c.rouge ? C.red : C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ fontSize: 10.5, color: c.rouge ? C.red : C.muted, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 600 }}>{c.titre}</div>
+                <div className="disp" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: c.rouge ? C.red : C.text }}>{c.valeur}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{c.detail}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* ---- seuils ---- */}
+          <div className="flex items-center gap-3 mb-4" style={{ fontSize: 11.5, color: C.muted, flexWrap: "wrap" }}>
+            <AlertTriangle size={12} color={C.mutedSoft} />
+            <span>
+              Alertes : même fiche au-delà de {seuils.appel_long_minutes} min · en production sans fiche au-delà de {seuils.inactivite_minutes} min · pauses selon les limites de leur type.
+            </span>
+            {peutRegler && !reglageOuvert && (
+              <button onClick={() => { setBrouillonSeuils(seuils); setReglageOuvert(true); }}
+                style={{ background: "none", border: "none", color: C.teal, fontSize: 11.5, fontWeight: 600, padding: 0 }}>
+                Régler
+              </button>
+            )}
+          </div>
+          {reglageOuvert && (
+            <div className="flex items-end gap-3 mb-4" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px", flexWrap: "wrap" }}>
+              {[
+                { cle: "appel_long_minutes", libelle: "Même fiche au-delà de (min)" },
+                { cle: "inactivite_minutes", libelle: "Sans fiche en production au-delà de (min)" },
+              ].map((f) => (
+                <label key={f.cle} style={{ fontSize: 11, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {f.libelle}
+                  <input type="number" min={1} max={240} value={brouillonSeuils[f.cle]}
+                    onChange={(e) => setBrouillonSeuils((b) => ({ ...b, [f.cle]: e.target.value }))}
+                    style={{ width: 120, border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 9px", fontSize: 13 }} />
+                </label>
+              ))}
+              <button onClick={enregistrerSeuils} disabled={enregistrement}
+                style={{ display: "flex", alignItems: "center", gap: 6, background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600 }}>
+                {enregistrement ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Enregistrer
+              </button>
+              <button onClick={() => setReglageOuvert(false)}
+                style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 12.5 }}>
+                Annuler
+              </button>
+              <span style={{ fontSize: 11, color: C.mutedSoft, flexBasis: "100%" }}>
+                Les limites de pause se règlent par type de pause (durée maximale, nombre par jour).
+              </span>
+            </div>
+          )}
+
+          {/* ---- filtres ---- */}
+          <div className="flex items-center gap-2 mb-4" style={{ flexWrap: "wrap" }}>
+            <div style={{ display: "flex", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 2 }}>
+              {[{ id: "mur", l: "Mur" }, { id: "classement", l: "Classement" }].map((v) => (
+                <button key={v.id} onClick={() => setVue(v.id)}
+                  style={{ background: vue === v.id ? C.ink : "transparent", color: vue === v.id ? "#fff" : C.text, border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 12, fontWeight: 600 }}>
+                  {v.l}
+                </button>
+              ))}
+            </div>
+            <select value={equipe} onChange={(e) => setEquipe(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, background: C.surface }}>
+              <option value="">Toutes les équipes</option>
+              {equipes.map((e) => <option key={e} value={e}>{e}</option>)}
+            </select>
+            <div className="flex items-center gap-2" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 10px" }}>
+              <Search size={13} color={C.mutedSoft} />
+              <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Nom ou matricule"
+                style={{ border: "none", outline: "none", fontSize: 12.5, width: 150 }} />
+            </div>
+            <label className="flex items-center gap-2" style={{ fontSize: 12.5, color: C.text, cursor: "pointer" }}>
+              <input type="checkbox" checked={alertesSeules} onChange={(e) => setAlertesSeules(e.target.checked)} />
+              Alertes seulement
+            </label>
+          </div>
+
+          {filtrees.length === 0 ? (
+            <p style={{ fontSize: 13, color: C.muted }}>
+              {agents.length === 0 ? "Aucun agent dans votre périmètre." : "Aucun agent ne correspond à ces critères."}
+            </p>
+          ) : vue === "mur" ? (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 10 }}>
+                {actifs.map((a) => (
+                  <CarteSupervision key={a.agent_id} a={a} typesPause={typesPause} maintenant={maintenant} seuils={seuils} />
+                ))}
+              </div>
+              {deconnectes.length > 0 && (
+                <div style={{ marginTop: 18 }}>
+                  <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 600, marginBottom: 8 }}>
+                    Déconnectés ({deconnectes.length})
+                  </div>
+                  <div className="flex" style={{ flexWrap: "wrap", gap: 6 }}>
+                    {deconnectes.map((a) => (
+                      <span key={a.agent_id} title={a.fiches_jour > 0 ? `${a.fiches_jour} fiches aujourd'hui` : "Aucune fiche aujourd'hui"}
+                        style={{ background: a.alertes.length > 0 ? C.redSoft : C.surface, border: `1px solid ${a.alertes.length > 0 ? C.red : C.border}`, borderRadius: 999, padding: "4px 10px", fontSize: 11.5, color: C.muted }}>
+                        {a.nom}{a.fiches_jour > 0 ? ` · ${a.fiches_jour}` : ""}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <ClassementSupervision lignes={filtrees} tri={tri} setTri={setTri} pct={pct} parHeure={parHeure} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CarteSupervision({ a, typesPause, maintenant, seuils }) {
+  const enAlerte = a.alertes.length > 0;
+  const pause = a.statut === "en_pause" ? typesPause.get(a.pause_type_id) : null;
+  const couleurStatut = a.statut === "en_prod" ? C.green : a.statut === "en_pause" ? (pause?.couleur || C.amber) : C.mutedSoft;
+  const libelleStatut = a.statut === "en_prod" ? "Production" : a.statut === "en_pause" ? (pause?.nom || "Pause") : "Déconnecté";
+  const dureeStatut = ecoule(a.statut === "en_pause" && a.pause_debut ? a.pause_debut : a.statut_depuis, maintenant);
+  const dureeFiche = ecoule(a.fiche_depuis, maintenant);
+  const ficheLongue = a.statut === "en_prod" && dureeFiche > seuils.appel_long_minutes * 60;
+  const tauxContact = a.fiches_jour > 0 ? Math.round((a.contacts_jour / a.fiches_jour) * 100) : null;
+  const styleQualif = a.derniere_qualif_categorie ? styleCategorie(a.derniere_qualif_categorie) : null;
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${enAlerte ? C.red : C.border}`, borderRadius: 12, padding: 14, boxShadow: enAlerte ? `0 0 0 3px ${C.redSoft}` : "none" }}>
+      <div className="flex items-start justify-between" style={{ gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.nom}</div>
+          <div style={{ fontSize: 10.5, color: C.mutedSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {[a.matricule, a.equipe, a.role === "coach" ? "coach" : null].filter(Boolean).join(" · ") || "—"}
+          </div>
+        </div>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div className="flex items-center gap-1.5" style={{ justifyContent: "flex-end", fontSize: 11, fontWeight: 600, color: couleurStatut }}>
+            <span style={{ width: 7, height: 7, borderRadius: 999, background: couleurStatut }} /> {libelleStatut}
+          </div>
+          <div className="mono" style={{ fontSize: 12, color: C.text, marginTop: 1 }}>{chrono(dureeStatut)}</div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10, background: C.canvas, borderRadius: 8, padding: "8px 10px", fontSize: 11.5 }}>
+        {a.fiche_id ? (
+          <div className="flex items-center justify-between" style={{ gap: 8 }}>
+            <span style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              <Phone size={11} style={{ verticalAlign: "-1px", marginRight: 5 }} color={C.teal} />
+              #{a.fiche_numero} · {a.fiche_nom || "—"}
+            </span>
+            <span className="mono" style={{ color: ficheLongue ? C.red : C.text, fontWeight: ficheLongue ? 700 : 500, flexShrink: 0 }}>{chrono(dureeFiche)}</span>
+          </div>
+        ) : (
+          <span style={{ color: C.mutedSoft }}>{a.statut === "en_prod" ? "Aucune fiche ouverte" : "—"}</span>
+        )}
+        <div style={{ marginTop: 5, color: C.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {a.derniere_qualif_le ? (
+            <>
+              Dernière :{" "}
+              <span style={{ color: styleQualif?.color || C.text, fontWeight: 600 }}>{a.derniere_qualif_motif}</span>
+              {" · "}{formatRelatif(a.derniere_qualif_le)}
+            </>
+          ) : "Aucune qualification aujourd'hui"}
+        </div>
+      </div>
+
+      <div className="flex" style={{ marginTop: 10, gap: 4 }}>
+        {[
+          { l: "Fiches", v: a.fiches_jour },
+          { l: "Contact", v: tauxContact === null ? "—" : `${tauxContact} %` },
+          { l: "Ventes", v: a.ventes_jour },
+          { l: "DMT", v: a.duree_moy_secondes === null ? "—" : chrono(a.duree_moy_secondes) },
+        ].map((s) => (
+          <div key={s.l} style={{ flex: 1, textAlign: "center" }}>
+            <div className="disp" style={{ fontSize: 14, fontWeight: 700 }}>{s.v}</div>
+            <div style={{ fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase" }}>{s.l}</div>
+          </div>
+        ))}
+      </div>
+
+      {enAlerte && (
+        <div className="flex flex-col" style={{ marginTop: 10, gap: 4 }}>
+          {a.alertes.map((al) => (
+            <div key={al.code} className="flex items-center gap-1.5" style={{ background: C.redSoft, color: C.red, borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 600 }}>
+              <AlertTriangle size={11} style={{ flexShrink: 0 }} /> {al.texte}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClassementSupervision({ lignes, tri, setTri, pct, parHeure }) {
+  const colonnes = [
+    { id: "nom", l: "Agent", valeur: (a) => a.nom, texte: true },
+    { id: "equipe", l: "Équipe", valeur: (a) => a.equipe || "", texte: true },
+    { id: "fiches_jour", l: "Fiches", valeur: (a) => a.fiches_jour },
+    { id: "par_heure", l: "Fiches / h", valeur: (a) => (a.secondes_prod >= 600 ? a.fiches_jour / (a.secondes_prod / 3600) : -1), rendu: (a) => parHeure(a.fiches_jour, a.secondes_prod) },
+    { id: "contacts_jour", l: "Contacts", valeur: (a) => a.contacts_jour },
+    { id: "taux", l: "Taux contact", valeur: (a) => (a.fiches_jour > 0 ? a.contacts_jour / a.fiches_jour : -1), rendu: (a) => pct(a.contacts_jour, a.fiches_jour) },
+    { id: "ventes_jour", l: "Ventes", valeur: (a) => a.ventes_jour },
+    { id: "duree_moy_secondes", l: "DMT", valeur: (a) => a.duree_moy_secondes ?? -1, rendu: (a) => (a.duree_moy_secondes === null ? "—" : chrono(a.duree_moy_secondes)) },
+    { id: "secondes_prod", l: "Production", valeur: (a) => a.secondes_prod, rendu: (a) => dureeLisible(a.secondes_prod) },
+    { id: "secondes_pause", l: "Pause", valeur: (a) => a.secondes_pause, rendu: (a) => dureeLisible(a.secondes_pause) },
+    { id: "occupation", l: "Occupation", valeur: (a) => (a.secondes_prod + a.secondes_pause > 0 ? a.secondes_prod / (a.secondes_prod + a.secondes_pause) : -1), rendu: (a) => pct(a.secondes_prod, a.secondes_prod + a.secondes_pause) },
+  ];
+  const col = colonnes.find((c) => c.id === tri.col) || colonnes[2];
+  const triees = [...lignes].sort((a, b) => {
+    const va = col.valeur(a), vb = col.valeur(b);
+    const r = col.texte ? String(va).localeCompare(String(vb)) : va - vb;
+    return r * tri.sens || a.nom.localeCompare(b.nom);
+  });
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+        <thead>
+          <tr style={{ background: C.canvas, textAlign: "left" }}>
+            <th style={{ padding: "10px 12px", color: C.muted, fontWeight: 600, fontSize: 11 }}>#</th>
+            {colonnes.map((c) => (
+              <th key={c.id} onClick={() => setTri((t) => ({ col: c.id, sens: t.col === c.id ? -t.sens : (c.texte ? 1 : -1) }))}
+                style={{ padding: "10px 12px", color: tri.col === c.id ? C.text : C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em", cursor: "pointer", whiteSpace: "nowrap", textAlign: c.texte ? "left" : "right" }}>
+                {c.l}{tri.col === c.id ? (tri.sens < 0 ? " ↓" : " ↑") : ""}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {triees.map((a, i) => (
+            <tr key={a.agent_id} style={{ borderTop: `1px solid ${C.borderSoft}`, background: a.alertes.length > 0 ? C.redSoft : undefined }}>
+              <td className="mono" style={{ padding: "9px 12px", color: C.mutedSoft }}>{i + 1}</td>
+              {colonnes.map((c) => (
+                <td key={c.id} className={c.texte ? undefined : "mono"}
+                  style={{ padding: "9px 12px", textAlign: c.texte ? "left" : "right", fontWeight: c.id === "nom" ? 600 : 400, whiteSpace: "nowrap" }}>
+                  {c.rendu ? c.rendu(a) : c.valeur(a) || (c.texte ? "—" : 0)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ---------------------------------- controle qualite ---------------------------------- */
+
+const REPONSES_QC = [
+  { id: "oui", l: "Oui", color: C.green, soft: C.greenSoft },
+  { id: "partiel", l: "Partiel", color: C.amber, soft: C.amberSoft },
+  { id: "non", l: "Non", color: C.red, soft: C.redSoft },
+  { id: "na", l: "S.O.", color: C.muted, soft: C.borderSoft, titre: "Sans objet : le critère est retiré du calcul" },
+];
+
+const STATUTS_QC = {
+  publiee: { l: "Non lue", color: C.amber, soft: C.amberSoft },
+  lue: { l: "Lue", color: C.muted, soft: C.borderSoft },
+  contestee: { l: "Contestée", color: C.red, soft: C.redSoft },
+  maintenue: { l: "Maintenue", color: C.muted, soft: C.borderSoft },
+  revisee: { l: "Révisée", color: C.teal, soft: C.tealSoft },
+  annulee: { l: "Annulée", color: C.mutedSoft, soft: C.borderSoft },
+};
+
+const RAISONS_QC = {
+  hasard: { l: "Au hasard", color: C.muted, soft: C.borderSoft },
+  contact_court: { l: "Contact très court", color: C.red, soft: C.redSoft },
+  vente: { l: "Vente", color: C.green, soft: C.greenSoft },
+  negatif: { l: "Négatif", color: C.amber, soft: C.amberSoft },
+};
+
+const OBJECTIF_EVALUATIONS_SEMAINE = 4;
+const DELAI_CONTESTATION_JOURS = 7;
+
+// Variables du lien d'enregistrement. L'heure est celle d'Abidjan, ecrite en
+// toutes lettres : c'est l'heure que l'outil d'enregistrement affichera, quel
+// que soit le fuseau du poste qui ouvre le lien.
+const VARIABLES_ENREGISTREMENT = [
+  { cle: "telephone", l: "numéro appelé" },
+  { cle: "numero_box", l: "numéro de box" },
+  { cle: "numero_fiche", l: "numéro de fiche" },
+  { cle: "matricule", l: "matricule de l'agent" },
+  { cle: "date", l: "date de fin d'appel (AAAA-MM-JJ)" },
+  { cle: "heure", l: "heure de fin d'appel (HH:MM:SS)" },
+  { cle: "date_debut", l: "date d'ouverture de la fiche" },
+  { cle: "heure_debut", l: "heure d'ouverture de la fiche" },
+  { cle: "horodatage", l: "date et heure ISO (fin d'appel)" },
+];
+
+function partiesAbidjan(date) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Abidjan", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(date).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, heure: `${p.hour}:${p.minute}:${p.second}` };
+}
+
+function lienEnregistrement(modele, appel) {
+  if (!modele || !appel) return null;
+  const fin = new Date(appel.appel_le || appel.created_at);
+  const debut = new Date(fin.getTime() - (appel.duree_secondes || 0) * 1000);
+  const f = partiesAbidjan(fin), d = partiesAbidjan(debut);
+  const valeurs = {
+    telephone: appel.telephone, numero_box: appel.numero_box, numero_fiche: appel.numero_fiche,
+    matricule: appel.agent_matricule || appel.matricule,
+    date: f.date, heure: f.heure, date_debut: d.date, heure_debut: d.heure, horodatage: fin.toISOString(),
+  };
+  const url = String(modele).replace(/\{(\w+)\}/g, (_, cle) => (valeurs[cle] === null || valeurs[cle] === undefined ? "" : encodeURIComponent(String(valeurs[cle]))));
+  return lienValide(url);
+}
+
+// Meme calcul que qc_calculer en base, pour afficher la note pendant la
+// saisie. La note enregistree reste celle calculee par la base.
+function calculerNoteQc(grille, reponses, eliminatoires) {
+  if (!grille) return { note: null, niveau: null, manquants: 0 };
+  let obtenu = 0, possible = 0, manquants = 0;
+  for (const s of grille.sections || []) for (const c of s.criteres || []) {
+    const r = reponses[c.id];
+    if (!r) { manquants++; continue; }
+    if (r === "na") continue;
+    possible += c.points;
+    obtenu += c.points * (r === "oui" ? 1 : r === "partiel" ? 0.5 : 0);
+  }
+  if (possible === 0) return { note: null, niveau: null, manquants };
+  const note = eliminatoires.length > 0 ? 0 : Math.round((1000 * obtenu) / possible) / 10;
+  const niveau = [...(grille.niveaux || [])].sort((a, b) => b.min - a.min).find((n) => n.min <= note)?.libelle || null;
+  return { note, niveau, manquants };
+}
+
+function couleurNiveauQc(note) {
+  if (note === null || note === undefined) return { color: C.muted, soft: C.borderSoft };
+  if (note >= 90) return { color: C.green, soft: C.greenSoft };
+  if (note >= 75) return { color: C.teal, soft: C.tealSoft };
+  if (note >= 60) return { color: C.amber, soft: C.amberSoft };
+  return { color: C.red, soft: C.redSoft };
+}
+
+function PastilleQc({ meta, children }) {
+  return (
+    <span style={{ background: meta.soft, color: meta.color, padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>
+      {children || meta.l}
+    </span>
+  );
+}
+
+function NoteQc({ note, niveau, grande }) {
+  const c = couleurNiveauQc(note);
+  return (
+    <span className="flex items-center gap-2" style={{ display: "inline-flex" }}>
+      <span className="disp" style={{ fontSize: grande ? 26 : 14, fontWeight: 700, color: c.color }}>
+        {note === null || note === undefined ? "—" : String(note).replace(".", ",")}
+      </span>
+      {niveau && <PastilleQc meta={c}>{niveau}</PastilleQc>}
+    </span>
+  );
+}
+
+function QualitePanel({ accessToken, role, moiId, onCompteurs, compteurs }) {
+  const estCoach = role === "coach" || role === "super_admin";
+  const estArbitre = ["superviseur", "admin", "super_admin"].includes(role);
+  const estAdmin = role === "admin" || role === "super_admin";
+  const estAgent = role === "agent";
+
+  const vues = estAgent ? [] : [
+    ...(estCoach ? [{ id: "a_evaluer", l: "À évaluer" }] : []),
+    { id: "evaluations", l: "Évaluations" },
+    ...(estArbitre ? [{ id: "contestations", l: "Contestations", n: compteurs?.contestations || 0 }] : []),
+    ...(estAdmin ? [{ id: "reglages", l: "Grille et enregistrement" }] : []),
+  ];
+  const [vue, setVue] = useState(estAgent ? "evaluations" : vues[0].id);
+
+  const [grilles, setGrilles] = useState(null);
+  const [lienModele, setLienModele] = useState(null);
+  const [error, setError] = useState(null);
+
+  const chargerReferentiel = useCallback(async () => {
+    try {
+      const [g, [s]] = await Promise.all([
+        supaRest("qc_grilles?select=id,version,contenu,actif,created_at&order=version.desc", { accessToken }),
+        supaRest("supervision_seuils?select=lien_enregistrement&id=eq.1", { accessToken }),
+      ]);
+      setGrilles(g);
+      setLienModele(s?.lien_enregistrement || null);
+    } catch (e) { setError(e.message); }
+  }, [accessToken]);
+  useEffect(() => { chargerReferentiel(); }, [chargerReferentiel]);
+
+  const grilleActive = grilles?.find((g) => g.actif) || null;
+  const grillesParId = useMemo(() => new Map((grilles || []).map((g) => [g.id, g.contenu])), [grilles]);
+
+  return (
+    <div>
+      <div className="mb-5">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>{estAgent ? "Mes évaluations" : "Contrôle qualité"}</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+          {estAgent
+            ? `Les évaluations de vos appels par votre coach. Vous pouvez en contester une dans les ${DELAI_CONTESTATION_JOURS} jours.`
+            : role === "coach"
+              ? `Évaluez les appels de votre équipe : objectif ${OBJECTIF_EVALUATIONS_SEMAINE} par agent et par semaine.`
+              : "Les évaluations des coachs, les contestations des agents, et la grille."}
+        </p>
+      </div>
+
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+
+      {vues.length > 1 && (
+        <div className="flex mb-5" style={{ gap: 4, borderBottom: `1px solid ${C.border}` }}>
+          {vues.map((v) => (
+            <button key={v.id} onClick={() => setVue(v.id)}
+              style={{ background: "none", border: "none", borderBottom: `2px solid ${vue === v.id ? C.ink : "transparent"}`, padding: "8px 12px", fontSize: 13, fontWeight: 600, color: vue === v.id ? C.text : C.muted, marginBottom: -1, display: "flex", alignItems: "center", gap: 6 }}>
+              {v.l}
+              {v.n > 0 && <span className="mono" style={{ background: C.red, color: "#fff", borderRadius: 999, padding: "0 6px", fontSize: 10.5 }}>{v.n}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {!grilles ? (error ? null : <CenterLoader />) : (
+        <>
+          {vue === "a_evaluer" && <QcAEvaluer accessToken={accessToken} grille={grilleActive?.contenu} lienModele={lienModele} />}
+          {vue === "evaluations" && (
+            <QcListe accessToken={accessToken} role={role} moiId={moiId} grillesParId={grillesParId}
+              lienModele={lienModele} onCompteurs={onCompteurs} />
+          )}
+          {vue === "contestations" && (
+            <QcListe accessToken={accessToken} role={role} moiId={moiId} grillesParId={grillesParId}
+              lienModele={lienModele} onCompteurs={onCompteurs} contestationsSeules />
+          )}
+          {vue === "reglages" && (
+            <QcReglages accessToken={accessToken} grilleActive={grilleActive} lienModele={lienModele} onEnregistre={chargerReferentiel} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---- a evaluer (coach) ---- */
+
+function QcAEvaluer({ accessToken, grille, lienModele }) {
+  const [donnees, setDonnees] = useState(null);
+  const [error, setError] = useState(null);
+  const [jours, setJours] = useState(7);
+  const [enCours, setEnCours] = useState(null);   // appel en cours d'evaluation
+  const [confirmation, setConfirmation] = useState(null);
+
+  const charger = useCallback(async () => {
+    setError(null);
+    try { setDonnees(await rpc("qc_a_evaluer", accessToken, { p_jours: jours })); }
+    catch (e) { setError(e.message); }
+  }, [accessToken, jours]);
+  useEffect(() => { setDonnees(null); charger(); }, [charger]);
+
+  if (enCours) {
+    return (
+      <QcFormulaire accessToken={accessToken} grille={grille} appel={enCours} lienModele={lienModele}
+        onAnnuler={() => setEnCours(null)}
+        onEnregistre={(note) => { setConfirmation(`Évaluation de ${enCours.agent_nom} enregistrée : ${String(note).replace(".", ",")} / 100.`); setEnCours(null); charger(); }} />
+    );
+  }
+
+  if (error) return <ErrorBlock message={error} />;
+  if (!donnees) return <CenterLoader />;
+
+  const appelsParAgent = new Map();
+  for (const a of donnees.appels) (appelsParAgent.get(a.agent_id) || appelsParAgent.set(a.agent_id, []).get(a.agent_id)).push(a);
+  const tauxEquipe = donnees.equipe_taux_contact;
+  // Retard d'abord : les agents les moins evalues cette semaine en tete.
+  const agents = [...donnees.agents].sort((a, b) => a.evaluations_semaine - b.evaluations_semaine || a.nom.localeCompare(b.nom));
+
+  return (
+    <div>
+      {confirmation && (
+        <div className="flex items-center gap-2 mb-4" style={{ background: C.greenSoft, color: C.green, borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>
+          <CheckCircle2 size={15} /> {confirmation}
+        </div>
+      )}
+      <div className="flex items-center gap-3 mb-4" style={{ flexWrap: "wrap" }}>
+        <select value={jours} onChange={(e) => setJours(Number(e.target.value))}
+          style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, background: C.surface }}>
+          <option value={1}>Appels d'aujourd'hui et d'hier</option>
+          <option value={7}>Appels des 7 derniers jours</option>
+          <option value={30}>Appels des 30 derniers jours</option>
+        </select>
+        <span style={{ fontSize: 11.5, color: C.muted }}>
+          Par agent : 2 appels au hasard, plus les cas à risque (contact de moins de 30 s, vente, négatif).
+          {tauxEquipe !== null && tauxEquipe !== undefined && ` Taux de contact de l'équipe : ${String(tauxEquipe).replace(".", ",")} %.`}
+        </span>
+        <button onClick={charger} title="Tirer d'autres appels au hasard"
+          style={{ display: "flex", alignItems: "center", gap: 5, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 12 }}>
+          <RefreshCw size={12} /> Autres appels
+        </button>
+      </div>
+      {!grille && <div className="mb-4"><ErrorBlock message="Aucune grille active : un administrateur doit en publier une." /></div>}
+
+      {agents.length === 0 ? (
+        <p style={{ fontSize: 13, color: C.muted }}>Aucun agent dans votre équipe.</p>
+      ) : (
+        <div className="flex flex-col" style={{ gap: 12 }}>
+          {agents.map((ag) => {
+            const appels = appelsParAgent.get(ag.agent_id) || [];
+            const atteint = ag.evaluations_semaine >= OBJECTIF_EVALUATIONS_SEMAINE;
+            const atypique = ag.taux_contact !== null && tauxEquipe !== null && ag.appels >= 20 && ag.taux_contact < tauxEquipe - 15;
+            return (
+              <div key={ag.agent_id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+                <div className="flex items-center justify-between" style={{ padding: "12px 16px", background: C.canvas, gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <span style={{ fontSize: 13.5, fontWeight: 600 }}>{ag.nom}</span>
+                    <span style={{ fontSize: 11, color: C.mutedSoft, marginLeft: 8 }}>{ag.matricule}</span>
+                  </div>
+                  <div className="flex items-center gap-3" style={{ fontSize: 11.5 }}>
+                    <span style={{ color: C.muted }}>
+                      {ag.appels} appel{ag.appels > 1 ? "s" : ""} · contact {ag.taux_contact === null ? "—" : `${String(ag.taux_contact).replace(".", ",")} %`}
+                    </span>
+                    {atypique && <PastilleQc meta={{ color: C.red, soft: C.redSoft }}>Taux de contact bas</PastilleQc>}
+                    <PastilleQc meta={atteint ? { color: C.green, soft: C.greenSoft } : { color: C.amber, soft: C.amberSoft }}>
+                      {ag.evaluations_semaine} / {OBJECTIF_EVALUATIONS_SEMAINE} cette semaine
+                    </PastilleQc>
+                  </div>
+                </div>
+                {appels.length === 0 ? (
+                  <p style={{ fontSize: 12, color: C.mutedSoft, padding: "10px 16px" }}>Aucun appel à évaluer sur la période.</p>
+                ) : (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                    <tbody>
+                      {appels.map((a) => (
+                        <tr key={a.qualification_id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                          <td className="mono" style={{ padding: "8px 16px", color: C.muted, whiteSpace: "nowrap" }}>
+                            {new Date(a.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                          </td>
+                          <td style={{ padding: "8px 8px" }}>
+                            <span style={{ color: styleCategorie(a.categorie).color, fontWeight: 600 }}>{a.motif}</span>
+                            <span style={{ color: C.mutedSoft }}> · #{a.numero_fiche}</span>
+                          </td>
+                          <td className="mono" style={{ padding: "8px 8px", color: C.muted, whiteSpace: "nowrap" }}>{a.duree_secondes === null ? "—" : chrono(a.duree_secondes)}</td>
+                          <td style={{ padding: "8px 8px" }}><PastilleQc meta={RAISONS_QC[a.raison] || RAISONS_QC.hasard} /></td>
+                          <td style={{ padding: "8px 16px", textAlign: "right" }}>
+                            <button onClick={() => { setConfirmation(null); setEnCours({ ...a, agent_nom: ag.nom, agent_matricule: ag.matricule }); }} disabled={!grille}
+                              style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 600 }}>
+                              Évaluer
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---- recapitulatif d'un appel ---- */
+
+function QcRecapAppel({ appel, lienModele }) {
+  const lien = lienEnregistrement(lienModele, appel);
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 14 }}>
+      <div className="flex items-start justify-between" style={{ gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{appel.agent_nom} <span style={{ fontSize: 11, color: C.mutedSoft, fontWeight: 400 }}>{appel.agent_matricule}</span></div>
+          <div style={{ fontSize: 12.5, color: C.muted, marginTop: 3 }}>
+            {new Date(appel.appel_le || appel.created_at).toLocaleString("fr-FR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}
+            {" · "}durée {appel.duree_secondes === null || appel.duree_secondes === undefined ? "inconnue" : chrono(appel.duree_secondes)}
+          </div>
+          <div style={{ fontSize: 12.5, marginTop: 6 }}>
+            Qualifié <span style={{ color: styleCategorie(appel.categorie).color, fontWeight: 600 }}>{appel.categorie} / {appel.motif}</span>
+          </div>
+          <div className="mono" style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+            Fiche #{appel.numero_fiche} · {appel.client_nom || "—"} · {appel.telephone || "—"}{appel.numero_box ? ` · box ${appel.numero_box}` : ""}
+          </div>
+          {(appel.commentaire || appel.qualification_commentaire) && (
+            <div style={{ fontSize: 12, color: C.text, marginTop: 6, fontStyle: "italic" }}>« {appel.commentaire || appel.qualification_commentaire} »</div>
+          )}
+        </div>
+        {lien ? (
+          <a href={lien} target="_blank" rel="noopener noreferrer"
+            style={{ display: "flex", alignItems: "center", gap: 6, background: C.teal, color: "#fff", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, textDecoration: "none" }}>
+            <PlayCircle size={14} /> Écouter l'enregistrement
+          </a>
+        ) : (
+          <span style={{ fontSize: 11, color: C.mutedSoft, maxWidth: 200, textAlign: "right" }}>
+            Lien d'enregistrement non configuré
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---- formulaire (creation par le coach, revision par le superviseur) ---- */
+
+function QcFormulaire({ accessToken, grille, appel, lienModele, onAnnuler, onEnregistre, revision }) {
+  const [reponses, setReponses] = useState(revision?.reponses || {});
+  const [eliminatoires, setEliminatoires] = useState(revision?.eliminatoires || []);
+  const [commentaire, setCommentaire] = useState("");
+  const [axes, setAxes] = useState("");
+  const [enregistrement, setEnregistrement] = useState(false);
+  const [error, setError] = useState(null);
+
+  const calcul = calculerNoteQc(grille, reponses, eliminatoires);
+  const tousLesCriteres = (grille?.sections || []).flatMap((s) => s.criteres);
+
+  function remplir(section, valeur) {
+    setReponses((r) => {
+      const n = { ...r };
+      for (const s of grille.sections) if (!section || s.id === section) for (const c of s.criteres) n[c.id] = valeur;
+      return n;
+    });
+  }
+  // Appel sans conversation (pas de reponse, messagerie...) : seule la
+  // qualification se juge, tout le reste est sans objet.
+  function sansConversation() {
+    setReponses(() => {
+      const n = {};
+      for (const s of grille.sections) for (const c of s.criteres) n[c.id] = s.id === "qualification" ? "oui" : "na";
+      return n;
+    });
+  }
+
+  async function enregistrer() {
+    setEnregistrement(true); setError(null);
+    try {
+      if (revision) {
+        await revision.onValider(reponses, eliminatoires);
+        return;
+      }
+      await rpc("qc_evaluer", accessToken, {
+        p_qualification_id: appel.qualification_id, p_reponses: reponses, p_eliminatoires: eliminatoires,
+        p_commentaire: commentaire, p_axes_progres: axes,
+      });
+      onEnregistre(calcul.note);
+    } catch (e) { setError(e.message); } finally { setEnregistrement(false); }
+  }
+
+  if (!grille) return <ErrorBlock message="Grille introuvable." />;
+
+  return (
+    <div>
+      <button onClick={onAnnuler} style={{ background: "none", border: "none", color: C.teal, fontSize: 12.5, fontWeight: 600, padding: 0, marginBottom: 12 }}>
+        ← Retour
+      </button>
+      {appel && <QcRecapAppel appel={appel} lienModele={lienModele} />}
+
+      <div className="flex items-center gap-2 mb-3" style={{ flexWrap: "wrap" }}>
+        <button onClick={() => remplir(null, "oui")} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 11px", fontSize: 12 }}>Tout à « Oui »</button>
+        <button onClick={sansConversation} title="Pas de réponse, messagerie… : seule la qualification est jugée"
+          style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 11px", fontSize: 12 }}>Appel sans conversation</button>
+      </div>
+
+      <div className="flex flex-col" style={{ gap: 10 }}>
+        {grille.sections.map((s) => {
+          const pts = s.criteres.reduce((t, c) => t + c.points, 0);
+          return (
+            <div key={s.id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+              <div className="flex items-center justify-between" style={{ padding: "9px 14px", background: C.canvas }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700 }}>{s.titre} <span style={{ color: C.mutedSoft, fontWeight: 500 }}>· {pts} pts</span></span>
+                <button onClick={() => remplir(s.id, "na")} style={{ background: "none", border: "none", color: C.muted, fontSize: 11 }}>Section sans objet</button>
+              </div>
+              {s.criteres.map((c) => (
+                <div key={c.id} className="flex items-center justify-between" style={{ padding: "8px 14px", borderTop: `1px solid ${C.borderSoft}`, gap: 12 }}>
+                  <span style={{ fontSize: 12.5, flex: 1 }}>{c.libelle} <span className="mono" style={{ color: C.mutedSoft, fontSize: 11 }}>{c.points}</span></span>
+                  <div className="flex" style={{ gap: 4, flexShrink: 0 }}>
+                    {REPONSES_QC.map((r) => {
+                      const actif = reponses[c.id] === r.id;
+                      return (
+                        <button key={r.id} title={r.titre} onClick={() => setReponses((x) => ({ ...x, [c.id]: r.id }))}
+                          style={{ minWidth: 52, background: actif ? r.color : C.surface, color: actif ? "#fff" : C.muted, border: `1px solid ${actif ? r.color : C.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 11.5, fontWeight: 600 }}>
+                          {r.l}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+
+        {grille.eliminatoires?.length > 0 && (
+          <div style={{ background: C.surface, border: `1px solid ${eliminatoires.length ? C.red : C.border}`, borderRadius: 12, padding: "10px 14px" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.red, marginBottom: 6 }}>Critères éliminatoires — un seul coché ramène la note à 0</div>
+            {grille.eliminatoires.map((e) => (
+              <label key={e.id} className="flex items-center gap-2" style={{ fontSize: 12.5, padding: "3px 0", cursor: "pointer" }}>
+                <input type="checkbox" checked={eliminatoires.includes(e.id)}
+                  onChange={(ev) => setEliminatoires((l) => ev.target.checked ? [...l, e.id] : l.filter((x) => x !== e.id))} />
+                {e.libelle}
+              </label>
+            ))}
+          </div>
+        )}
+
+        {!revision && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {[
+              { v: commentaire, set: setCommentaire, l: "Commentaire pour l'agent", ph: "Ce qui s'est bien passé, ce qui a manqué…" },
+              { v: axes, set: setAxes, l: "Axes de progrès", ph: "Un ou deux points concrets à travailler" },
+            ].map((f) => (
+              <label key={f.l} style={{ fontSize: 11.5, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
+                {f.l}
+                <textarea value={f.v} onChange={(e) => f.set(e.target.value)} placeholder={f.ph} rows={3}
+                  style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, resize: "vertical" }} />
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {error && <div className="mt-3"><ErrorBlock message={error} /></div>}
+
+      <div className="flex items-center justify-between" style={{ position: "sticky", bottom: 0, marginTop: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", gap: 12 }}>
+        <div className="flex items-center gap-3">
+          <NoteQc note={calcul.note} niveau={calcul.niveau} grande />
+          {calcul.manquants > 0 && <span style={{ fontSize: 11.5, color: C.muted }}>{calcul.manquants} critère{calcul.manquants > 1 ? "s" : ""} sur {tousLesCriteres.length} sans réponse</span>}
+        </div>
+        <button onClick={enregistrer} disabled={enregistrement || calcul.manquants > 0 || calcul.note === null}
+          style={{ display: "flex", alignItems: "center", gap: 6, background: calcul.manquants > 0 || calcul.note === null ? C.border : C.ink, color: calcul.manquants > 0 || calcul.note === null ? C.mutedSoft : "#fff", border: "none", borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 700 }}>
+          {enregistrement ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {revision ? "Valider la révision" : "Publier l'évaluation"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- liste, statistiques et detail ---- */
+
+function QcListe({ accessToken, role, moiId, grillesParId, lienModele, onCompteurs, contestationsSeules }) {
+  const [jours, setJours] = useState(contestationsSeules ? 90 : 30);
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [agentFiltre, setAgentFiltre] = useState("");
+  const [ouverte, setOuverte] = useState(null);
+  const estAgent = role === "agent";
+
+  const charger = useCallback(async () => {
+    setError(null);
+    try {
+      const fin = new Date(Date.now() + 60000);
+      const debut = new Date(Date.now() - jours * 86400000);
+      const r = await rpc("qc_evaluations_liste", accessToken, { p_depuis: debut.toISOString(), p_jusqua: fin.toISOString() });
+      setRows(r || []);
+    } catch (e) { setError(e.message); }
+  }, [accessToken, jours]);
+  useEffect(() => { setRows(null); charger(); }, [charger]);
+
+  const apresAction = useCallback(async (idAGarder) => {
+    await charger();
+    onCompteurs?.();
+    if (!idAGarder) setOuverte(null);
+  }, [charger, onCompteurs]);
+
+  if (error) return <ErrorBlock message={error} />;
+  if (!rows) return <CenterLoader />;
+
+  const selection = rows.filter((r) => (!contestationsSeules || r.statut === "contestee") && (!agentFiltre || r.agent_id === agentFiltre));
+  const detail = ouverte ? rows.find((r) => r.id === ouverte) : null;
+
+  if (detail) {
+    return (
+      <QcDetail accessToken={accessToken} ev={detail} role={role} moiId={moiId} grille={grillesParId.get(detail.grille_id)}
+        lienModele={lienModele} onRetour={() => setOuverte(null)} onAction={apresAction} />
+    );
+  }
+
+  // Les annulees restent dans la liste mais sortent des moyennes.
+  const comptees = selection.filter((r) => r.statut !== "annulee");
+  const moyenne = comptees.length ? comptees.reduce((t, r) => t + Number(r.note), 0) / comptees.length : null;
+
+  // Criteres les plus souvent rates : part de "non" (1) et de "partiel" (0,5)
+  // parmi les evaluations ou le critere s'appliquait.
+  const parCritere = new Map();
+  for (const r of comptees) {
+    const g = grillesParId.get(r.grille_id);
+    for (const s of g?.sections || []) for (const c of s.criteres) {
+      const rep = r.reponses?.[c.id];
+      if (!rep || rep === "na") continue;
+      const x = parCritere.get(c.id) || { libelle: c.libelle, section: s.titre, n: 0, echec: 0 };
+      x.n++; x.echec += rep === "non" ? 1 : rep === "partiel" ? 0.5 : 0; x.libelle = c.libelle;
+      parCritere.set(c.id, x);
+    }
+  }
+  const rates = [...parCritere.values()].filter((x) => x.echec > 0).sort((a, b) => b.echec / b.n - a.echec / a.n).slice(0, 5);
+
+  const parAgent = new Map();
+  for (const r of comptees) {
+    const x = parAgent.get(r.agent_id) || { nom: r.agent_nom, n: 0, total: 0 };
+    x.n++; x.total += Number(r.note); parAgent.set(r.agent_id, x);
+  }
+  const agentsListe = [...new Map(rows.map((r) => [r.agent_id, r.agent_nom])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4" style={{ flexWrap: "wrap" }}>
+        <select value={jours} onChange={(e) => setJours(Number(e.target.value))}
+          style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, background: C.surface }}>
+          <option value={7}>7 derniers jours</option>
+          <option value={30}>30 derniers jours</option>
+          <option value={90}>90 derniers jours</option>
+        </select>
+        {!estAgent && (
+          <select value={agentFiltre} onChange={(e) => setAgentFiltre(e.target.value)}
+            style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, background: C.surface }}>
+            <option value="">Tous les agents</option>
+            {agentsListe.map(([id, nom]) => <option key={id} value={id}>{nom}</option>)}
+          </select>
+        )}
+      </div>
+
+      {!contestationsSeules && comptees.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: estAgent ? "220px 1fr" : "220px 1fr 1fr", gap: 10, marginBottom: 14 }}>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+            <div style={{ fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 600 }}>Note moyenne</div>
+            <div style={{ marginTop: 6 }}><NoteQc note={moyenne === null ? null : Math.round(moyenne * 10) / 10} grande /></div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{comptees.length} évaluation{comptees.length > 1 ? "s" : ""}</div>
+          </div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+            <div style={{ fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 600, marginBottom: 6 }}>Points les plus souvent manqués</div>
+            {rates.length === 0 ? <span style={{ fontSize: 12, color: C.mutedSoft }}>Aucun critère manqué.</span> : rates.map((x) => (
+              <div key={x.libelle} className="flex items-center justify-between" style={{ fontSize: 12, padding: "2px 0", gap: 8 }}>
+                <span style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={`${x.section} — ${x.libelle}`}>{x.libelle}</span>
+                <span className="mono" style={{ color: C.red, flexShrink: 0 }}>{Math.round((100 * x.echec) / x.n)} %</span>
+              </div>
+            ))}
+          </div>
+          {!estAgent && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 600, marginBottom: 6 }}>Moyenne par agent</div>
+              <div style={{ maxHeight: 130, overflow: "auto" }}>
+                {[...parAgent.values()].sort((a, b) => a.total / a.n - b.total / b.n).map((x) => (
+                  <div key={x.nom} className="flex items-center justify-between" style={{ fontSize: 12, padding: "2px 0", gap: 8 }}>
+                    <span style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{x.nom} <span style={{ color: C.mutedSoft }}>({x.n})</span></span>
+                    <span className="mono" style={{ color: couleurNiveauQc(x.total / x.n).color, fontWeight: 600, flexShrink: 0 }}>{(Math.round((10 * x.total) / x.n) / 10).toString().replace(".", ",")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {selection.length === 0 ? (
+        <p style={{ fontSize: 13, color: C.muted }}>
+          {contestationsSeules ? "Aucune contestation en attente." : estAgent ? "Aucune évaluation sur la période." : "Aucune évaluation sur la période."}
+        </p>
+      ) : (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ background: C.canvas, textAlign: "left" }}>
+                {["Évaluée le", ...(estAgent ? [] : ["Agent"]), "Coach", "Appel", "Note", "Statut", ""].map((h) => (
+                  <th key={h} style={{ padding: "10px 14px", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {selection.map((r) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}`, background: estAgent && r.statut === "publiee" ? C.amberSoft : undefined, opacity: r.statut === "annulee" ? 0.55 : 1 }}>
+                  <td className="mono" style={{ padding: "9px 14px", color: C.muted, whiteSpace: "nowrap" }}>{new Date(r.created_at).toLocaleDateString("fr-FR")}</td>
+                  {!estAgent && <td style={{ padding: "9px 14px", fontWeight: 600 }}>{r.agent_nom}</td>}
+                  <td style={{ padding: "9px 14px", color: C.muted }}>{r.evaluateur_nom}</td>
+                  <td style={{ padding: "9px 14px" }}>
+                    <span style={{ color: styleCategorie(r.categorie).color, fontWeight: 600 }}>{r.motif}</span>
+                    <span className="mono" style={{ color: C.mutedSoft, fontSize: 11 }}> · {new Date(r.appel_le).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                  </td>
+                  <td style={{ padding: "9px 14px" }}><NoteQc note={Number(r.note)} niveau={r.niveau} /></td>
+                  <td style={{ padding: "9px 14px" }}><PastilleQc meta={STATUTS_QC[r.statut] || STATUTS_QC.lue} /></td>
+                  <td style={{ padding: "9px 14px", textAlign: "right" }}>
+                    <button onClick={() => setOuverte(r.id)}
+                      style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 600 }}>
+                      {contestationsSeules ? "Trancher" : "Voir"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QcDetail({ accessToken, ev, role, moiId, grille, lienModele, onRetour, onAction }) {
+  const [error, setError] = useState(null);
+  const [occupe, setOccupe] = useState(false);
+  const [motif, setMotif] = useState("");
+  const [contestationOuverte, setContestationOuverte] = useState(false);
+  const [decision, setDecision] = useState(null);         // 'maintenue' | 'revisee' | 'annulee'
+  const [commentaireArbitrage, setCommentaireArbitrage] = useState("");
+  const [revisionEnCours, setRevisionEnCours] = useState(false);
+  const [confirmSuppression, setConfirmSuppression] = useState(false);
+
+  const cEstMoi = ev.agent_id === moiId;
+  const estArbitre = ["superviseur", "admin", "super_admin"].includes(role);
+  const joursEcoules = (Date.now() - new Date(ev.created_at).getTime()) / 86400000;
+  const peutContester = cEstMoi && ["publiee", "lue"].includes(ev.statut) && joursEcoules <= DELAI_CONTESTATION_JOURS;
+  const peutSupprimer = role === "super_admin" || (ev.evaluateur_id === moiId && ev.statut === "publiee");
+
+  // L'agent qui ouvre son evaluation l'a lue : on le note une fois.
+  const dejaMarqueeRef = useRef(false);
+  useEffect(() => {
+    if (cEstMoi && ev.statut === "publiee" && !dejaMarqueeRef.current) {
+      dejaMarqueeRef.current = true;
+      rpc("qc_marquer_lue", accessToken, { p_evaluation_id: ev.id }).then(() => onAction(ev.id)).catch(() => {});
+    }
+  }, [cEstMoi, ev.statut, ev.id, accessToken, onAction]);
+
+  async function executer(fn) {
+    setOccupe(true); setError(null);
+    try { await fn(); } catch (e) { setError(e.message); } finally { setOccupe(false); }
+  }
+
+  const contester = () => executer(async () => {
+    await rpc("qc_contester", accessToken, { p_evaluation_id: ev.id, p_motif: motif });
+    setContestationOuverte(false); await onAction(ev.id);
+  });
+  const arbitrer = (reponses, eliminatoires) => executer(async () => {
+    await rpc("qc_arbitrer", accessToken, {
+      p_evaluation_id: ev.id, p_decision: decision, p_commentaire: commentaireArbitrage,
+      p_reponses: reponses || null, p_eliminatoires: eliminatoires || null,
+    });
+    setRevisionEnCours(false); setDecision(null); await onAction(ev.id);
+  });
+  const supprimer = () => executer(async () => {
+    await rpc("qc_supprimer", accessToken, { p_evaluation_id: ev.id });
+    await onAction(null);
+  });
+
+  if (revisionEnCours) {
+    return (
+      <div>
+        <div style={{ background: C.amberSoft, color: "#8a5c14", borderRadius: 9, padding: "10px 14px", fontSize: 12.5, marginBottom: 12 }}>
+          Révision : corrigez les réponses. La note sera recalculée ; l'ancienne ({String(ev.note).replace(".", ",")}) reste visible.
+          Votre explication : « {commentaireArbitrage} »
+        </div>
+        {error && <div className="mb-3"><ErrorBlock message={error} /></div>}
+        <QcFormulaire accessToken={accessToken} grille={grille} appel={null} lienModele={lienModele}
+          onAnnuler={() => setRevisionEnCours(false)}
+          revision={{ reponses: ev.reponses, eliminatoires: ev.eliminatoires, onValider: arbitrer }} />
+      </div>
+    );
+  }
+
+  const zoneTexte = { border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, width: "100%", resize: "vertical" };
+
+  return (
+    <div>
+      <button onClick={onRetour} style={{ background: "none", border: "none", color: C.teal, fontSize: 12.5, fontWeight: 600, padding: 0, marginBottom: 12 }}>
+        ← Retour à la liste
+      </button>
+
+      <QcRecapAppel appel={ev} lienModele={lienModele} />
+
+      <div className="flex items-center justify-between mb-3" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", gap: 12, flexWrap: "wrap" }}>
+        <div className="flex items-center gap-3">
+          <NoteQc note={Number(ev.note)} niveau={ev.niveau} grande />
+          {ev.note_initiale !== null && ev.note_initiale !== undefined && (
+            <span style={{ fontSize: 12, color: C.muted }}>note initiale {String(ev.note_initiale).replace(".", ",")}</span>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: C.muted, textAlign: "right" }}>
+          Évaluée par {ev.evaluateur_nom} le {new Date(ev.created_at).toLocaleDateString("fr-FR")}<br />
+          <PastilleQc meta={STATUTS_QC[ev.statut] || STATUTS_QC.lue} />
+        </div>
+      </div>
+
+      {(ev.commentaire || ev.axes_progres) && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+          {[{ l: "Commentaire du coach", v: ev.commentaire }, { l: "Axes de progrès", v: ev.axes_progres }].map((b) => (
+            <div key={b.l} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px" }}>
+              <div style={{ fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 600, marginBottom: 4 }}>{b.l}</div>
+              <div style={{ fontSize: 12.5, whiteSpace: "pre-wrap" }}>{b.v || "—"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {ev.contestation_motif && (
+        <div style={{ background: C.redSoft, border: `1px solid ${C.red}`, borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
+          <div style={{ fontSize: 10.5, color: C.red, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 700, marginBottom: 4 }}>
+            Contestation de l'agent · {new Date(ev.contestee_le).toLocaleDateString("fr-FR")}
+          </div>
+          <div style={{ fontSize: 12.5, whiteSpace: "pre-wrap" }}>{ev.contestation_motif}</div>
+        </div>
+      )}
+      {ev.arbitrage_commentaire && (
+        <div style={{ background: C.tealSoft, borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
+          <div style={{ fontSize: 10.5, color: C.teal, textTransform: "uppercase", letterSpacing: "0.03em", fontWeight: 700, marginBottom: 4 }}>
+            Décision de {ev.arbitre_nom} · {STATUTS_QC[ev.statut]?.l} · {new Date(ev.arbitree_le).toLocaleDateString("fr-FR")}
+          </div>
+          <div style={{ fontSize: 12.5, whiteSpace: "pre-wrap" }}>{ev.arbitrage_commentaire}</div>
+        </div>
+      )}
+
+      {error && <div className="mb-3"><ErrorBlock message={error} /></div>}
+
+      {/* ---- actions ---- */}
+      {peutContester && (
+        <div className="mb-3">
+          {!contestationOuverte ? (
+            <button onClick={() => setContestationOuverte(true)}
+              style={{ background: C.surface, border: `1px solid ${C.red}`, color: C.red, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
+              Contester cette évaluation
+            </button>
+          ) : (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Qu'est-ce que vous contestez ? Votre superviseur tranchera.</div>
+              <textarea value={motif} onChange={(e) => setMotif(e.target.value)} rows={3} style={zoneTexte}
+                placeholder="Par exemple : le client avait bien décroché, il a raccroché au bout de 5 secondes." />
+              <div className="flex gap-2 mt-2">
+                <button onClick={contester} disabled={occupe || !motif.trim()}
+                  style={{ background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
+                  {occupe ? "Envoi…" : "Envoyer la contestation"}
+                </button>
+                <button onClick={() => setContestationOuverte(false)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5 }}>Annuler</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {cEstMoi && ["publiee", "lue"].includes(ev.statut) && !peutContester && (
+        <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 12 }}>Le délai de contestation ({DELAI_CONTESTATION_JOURS} jours) est dépassé.</p>
+      )}
+
+      {estArbitre && ev.statut === "contestee" && !cEstMoi && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>Trancher la contestation</div>
+          <div className="flex gap-2 mb-2" style={{ flexWrap: "wrap" }}>
+            {[
+              { id: "maintenue", l: "Maintenir la note" },
+              { id: "revisee", l: "Réviser la note" },
+              { id: "annulee", l: "Annuler l'évaluation" },
+            ].map((d) => (
+              <button key={d.id} onClick={() => setDecision(d.id)}
+                style={{ background: decision === d.id ? C.ink : C.surface, color: decision === d.id ? "#fff" : C.text, border: `1px solid ${decision === d.id ? C.ink : C.border}`, borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 600 }}>
+                {d.l}
+              </button>
+            ))}
+          </div>
+          {decision && (
+            <>
+              <textarea value={commentaireArbitrage} onChange={(e) => setCommentaireArbitrage(e.target.value)} rows={3} style={zoneTexte}
+                placeholder="Votre explication, que l'agent et le coach liront." />
+              <button disabled={occupe || !commentaireArbitrage.trim()}
+                onClick={() => (decision === "revisee" ? setRevisionEnCours(true) : arbitrer())}
+                style={{ marginTop: 8, background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
+                {occupe ? "Enregistrement…" : decision === "revisee" ? "Corriger les réponses →" : "Valider la décision"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {peutSupprimer && (
+        <div className="mb-3">
+          {!confirmSuppression ? (
+            <button onClick={() => setConfirmSuppression(true)} style={{ background: "none", border: "none", color: C.red, fontSize: 12, padding: 0, display: "flex", alignItems: "center", gap: 5 }}>
+              <Trash2 size={12} /> Supprimer cette évaluation
+            </button>
+          ) : (
+            <div className="flex items-center gap-2" style={{ fontSize: 12.5 }}>
+              <span>Supprimer définitivement cette évaluation ?</span>
+              <button onClick={supprimer} disabled={occupe} style={{ background: C.red, color: "#fff", border: "none", borderRadius: 7, padding: "5px 11px", fontSize: 12, fontWeight: 600 }}>Supprimer</button>
+              <button onClick={() => setConfirmSuppression(false)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 11px", fontSize: 12 }}>Annuler</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---- grille remplie ---- */}
+      {grille ? (
+        <div className="flex flex-col" style={{ gap: 8 }}>
+          {grille.sections.map((s) => (
+            <div key={s.id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ padding: "8px 14px", background: C.canvas, fontSize: 12.5, fontWeight: 700 }}>{s.titre}</div>
+              {s.criteres.map((c) => {
+                const r = REPONSES_QC.find((x) => x.id === ev.reponses?.[c.id]);
+                return (
+                  <div key={c.id} className="flex items-center justify-between" style={{ padding: "7px 14px", borderTop: `1px solid ${C.borderSoft}`, gap: 12 }}>
+                    <span style={{ fontSize: 12.5 }}>{c.libelle} <span className="mono" style={{ color: C.mutedSoft, fontSize: 11 }}>{c.points}</span></span>
+                    {r ? <PastilleQc meta={r}>{r.l}</PastilleQc> : <span style={{ color: C.mutedSoft }}>—</span>}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {(ev.eliminatoires || []).length > 0 && (
+            <div style={{ background: C.redSoft, border: `1px solid ${C.red}`, borderRadius: 12, padding: "10px 14px" }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.red, marginBottom: 4 }}>Critère éliminatoire constaté</div>
+              {ev.eliminatoires.map((id) => (
+                <div key={id} style={{ fontSize: 12.5 }}>• {grille.eliminatoires?.find((e) => e.id === id)?.libelle || id}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p style={{ fontSize: 12.5, color: C.muted }}>Grille de cette évaluation introuvable.</p>
+      )}
+    </div>
+  );
+}
+
+/* ---- reglages (admin) : grille et lien d'enregistrement ---- */
+
+function QcReglages({ accessToken, grilleActive, lienModele, onEnregistre }) {
+  const [brouillon, setBrouillon] = useState(() => JSON.parse(JSON.stringify(grilleActive?.contenu || { sections: [], eliminatoires: [], niveaux: [{ min: 0, libelle: "Non conforme" }] })));
+  const [lien, setLien] = useState(lienModele || "");
+  const [error, setError] = useState(null);
+  const [message, setMessage] = useState(null);
+  const [occupe, setOccupe] = useState(false);
+
+  const total = brouillon.sections.reduce((t, s) => t + s.criteres.reduce((u, c) => u + (Number(c.points) || 0), 0), 0);
+  const modifie = JSON.stringify(brouillon) !== JSON.stringify(grilleActive?.contenu);
+
+  // Un identifiant stable par critere : c'est lui qui relie une reponse a son
+  // critere. Il n'est jamais reutilise, meme si le libelle change.
+  const nouvelId = (prefixe) => `${prefixe}_${Math.random().toString(36).slice(2, 8)}`;
+  const maj = (fn) => setBrouillon((b) => { const n = JSON.parse(JSON.stringify(b)); fn(n); return n; });
+
+  async function publier() {
+    setOccupe(true); setError(null); setMessage(null);
+    try {
+      const propre = {
+        ...brouillon,
+        sections: brouillon.sections.map((s) => ({ ...s, criteres: s.criteres.map((c) => ({ ...c, points: Number(c.points) })) })),
+        niveaux: brouillon.niveaux.map((n) => ({ ...n, min: Number(n.min) })),
+      };
+      await rpc("qc_publier_grille", accessToken, { p_contenu: propre });
+      setMessage("Nouvelle version de la grille publiée. Les évaluations déjà faites gardent leur grille d'origine.");
+      await onEnregistre();
+    } catch (e) { setError(e.message); } finally { setOccupe(false); }
+  }
+
+  async function enregistrerLien() {
+    setOccupe(true); setError(null); setMessage(null);
+    try {
+      await rpc("qc_regler_lien_enregistrement", accessToken, { p_lien: lien });
+      setMessage(lien.trim() ? "Lien d'enregistrement enregistré." : "Lien d'enregistrement retiré : le bouton est masqué.");
+      await onEnregistre();
+    } catch (e) { setError(e.message); } finally { setOccupe(false); }
+  }
+
+  const exemple = lienEnregistrement(lien, {
+    telephone: "0700000000", numero_box: "2536000000", numero_fiche: 12345, agent_matricule: "XGS-TC00",
+    appel_le: new Date().toISOString(), duree_secondes: 95,
+  });
+  const champ = { border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 12.5 };
+
+  return (
+    <div className="flex flex-col" style={{ gap: 16 }}>
+      {error && <ErrorBlock message={error} />}
+      {message && (
+        <div className="flex items-center gap-2" style={{ background: C.greenSoft, color: C.green, borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>
+          <CheckCircle2 size={15} /> {message}
+        </div>
+      )}
+
+      {/* ---- lien d'enregistrement ---- */}
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Lien vers l'enregistrement (Axterix)</div>
+        <p style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+          L'adresse d'un enregistrement dans l'outil d'appels, avec des variables entre accolades remplacées pour chaque appel.
+          Laissez vide tant que l'outil n'est pas disponible : le bouton « Écouter l'enregistrement » reste masqué.
+        </p>
+        <div className="flex gap-2">
+          <input value={lien} onChange={(e) => setLien(e.target.value)} placeholder="https://axterix.exemple/enregistrements?numero={telephone}&date={date}&heure={heure}"
+            style={{ ...champ, flex: 1 }} />
+          <button onClick={enregistrerLien} disabled={occupe || lien === (lienModele || "")}
+            style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
+            Enregistrer
+          </button>
+        </div>
+        <div className="flex" style={{ flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+          {VARIABLES_ENREGISTREMENT.map((v) => (
+            <button key={v.cle} onClick={() => setLien((l) => l + `{${v.cle}}`)} title={v.l}
+              className="mono" style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 8px", fontSize: 11 }}>
+              {`{${v.cle}}`}
+            </button>
+          ))}
+        </div>
+        {lien.trim() && (
+          <div className="mono" style={{ fontSize: 11, color: exemple ? C.muted : C.red, marginTop: 8, wordBreak: "break-all" }}>
+            {exemple ? `Exemple : ${exemple}` : "Adresse invalide : elle doit commencer par http:// ou https://"}
+          </div>
+        )}
+      </div>
+
+      {/* ---- grille ---- */}
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+        <div className="flex items-center justify-between mb-2" style={{ gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>Grille d'évaluation {grilleActive ? `· version ${grilleActive.version} en service` : ""}</div>
+            <p style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+              Publier crée une nouvelle version. Les évaluations déjà faites gardent la grille avec laquelle elles ont été notées.
+            </p>
+          </div>
+          <span className="disp" style={{ fontSize: 18, fontWeight: 700, color: total === 100 ? C.green : C.amber, flexShrink: 0 }}>{total} pts</span>
+        </div>
+        {total !== 100 && (
+          <p style={{ fontSize: 11.5, color: C.amber, marginBottom: 8 }}>
+            Le total n'est pas de 100 : ce n'est pas bloquant, la note est toujours ramenée sur 100, mais le poids de chaque critère change.
+          </p>
+        )}
+
+        <div className="flex flex-col" style={{ gap: 10 }}>
+          {brouillon.sections.map((s, si) => (
+            <div key={s.id} style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+              <div className="flex items-center gap-2" style={{ padding: "8px 10px", background: C.canvas }}>
+                <input value={s.titre} onChange={(e) => maj((b) => { b.sections[si].titre = e.target.value; })} style={{ ...champ, fontWeight: 700, flex: 1 }} />
+                <button onClick={() => maj((b) => { b.sections.splice(si, 1); })} title="Supprimer la section"
+                  style={{ background: "none", border: "none", color: C.red, padding: 4 }}><Trash2 size={13} /></button>
+              </div>
+              {s.criteres.map((c, ci) => (
+                <div key={c.id} className="flex items-center gap-2" style={{ padding: "6px 10px", borderTop: `1px solid ${C.borderSoft}` }}>
+                  <input value={c.libelle} onChange={(e) => maj((b) => { b.sections[si].criteres[ci].libelle = e.target.value; })} style={{ ...champ, flex: 1 }} />
+                  <input type="number" min={1} value={c.points} onChange={(e) => maj((b) => { b.sections[si].criteres[ci].points = e.target.value; })} style={{ ...champ, width: 64 }} />
+                  <span style={{ fontSize: 11, color: C.mutedSoft }}>pts</span>
+                  <button onClick={() => maj((b) => { b.sections[si].criteres.splice(ci, 1); })} title="Supprimer le critère"
+                    style={{ background: "none", border: "none", color: C.red, padding: 4 }}><X size={13} /></button>
+                </div>
+              ))}
+              <button onClick={() => maj((b) => { b.sections[si].criteres.push({ id: nouvelId(s.id), libelle: "Nouveau critère", points: 5 }); })}
+                style={{ background: "none", border: "none", borderTop: `1px solid ${C.borderSoft}`, width: "100%", textAlign: "left", padding: "7px 10px", color: C.teal, fontSize: 12, fontWeight: 600 }}>
+                + Ajouter un critère
+              </button>
+            </div>
+          ))}
+          <button onClick={() => maj((b) => { const id = nouvelId("section"); b.sections.push({ id, titre: "Nouvelle section", criteres: [{ id: nouvelId(id), libelle: "Nouveau critère", points: 5 }] }); })}
+            style={{ background: C.canvas, border: `1px dashed ${C.border}`, borderRadius: 10, padding: "9px", color: C.teal, fontSize: 12.5, fontWeight: 600 }}>
+            + Ajouter une section
+          </button>
+        </div>
+
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.red, marginBottom: 6 }}>Critères éliminatoires</div>
+          {brouillon.eliminatoires.map((e, ei) => (
+            <div key={e.id} className="flex items-center gap-2" style={{ marginBottom: 6 }}>
+              <input value={e.libelle} onChange={(ev) => maj((b) => { b.eliminatoires[ei].libelle = ev.target.value; })} style={{ ...champ, flex: 1 }} />
+              <button onClick={() => maj((b) => { b.eliminatoires.splice(ei, 1); })} style={{ background: "none", border: "none", color: C.red, padding: 4 }}><X size={13} /></button>
+            </div>
+          ))}
+          <button onClick={() => maj((b) => { b.eliminatoires.push({ id: nouvelId("elim"), libelle: "Nouveau critère éliminatoire" }); })}
+            style={{ background: "none", border: "none", color: C.teal, fontSize: 12, fontWeight: 600, padding: 0 }}>
+            + Ajouter un critère éliminatoire
+          </button>
+        </div>
+
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Niveaux (note minimale)</div>
+          <div className="flex" style={{ gap: 8, flexWrap: "wrap" }}>
+            {brouillon.niveaux.map((n, ni) => (
+              <div key={ni} className="flex items-center gap-1">
+                <input type="number" min={0} max={100} value={n.min} onChange={(e) => maj((b) => { b.niveaux[ni].min = e.target.value; })} style={{ ...champ, width: 58 }} />
+                <input value={n.libelle} onChange={(e) => maj((b) => { b.niveaux[ni].libelle = e.target.value; })} style={{ ...champ, width: 130 }} />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2" style={{ marginTop: 18 }}>
+          <button onClick={publier} disabled={occupe || !modifie}
+            style={{ display: "flex", alignItems: "center", gap: 6, background: modifie ? C.ink : C.border, color: modifie ? "#fff" : C.mutedSoft, border: "none", borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 700 }}>
+            {occupe ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Publier la nouvelle version
+          </button>
+          {modifie && (
+            <button onClick={() => setBrouillon(JSON.parse(JSON.stringify(grilleActive?.contenu)))}
+              style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5 }}>
+              Annuler les modifications
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
