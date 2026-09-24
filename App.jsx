@@ -258,6 +258,50 @@ function ouvrirLien(url, fiche) {
   if (sur) window.open(sur, "_blank", "noopener,noreferrer");
 }
 
+// Lien d'appel (Axterix) : lance l'appel depuis la fiche. En plus des
+// variables de la fiche ({telephone}, {numero_mtn}, {numero_box}...),
+// {numero} est le numero sur lequel l'agent a clique, et {matricule} celui de
+// l'agent. Le numero est reduit a ses chiffres (et au + initial) : un espace
+// ou un point, frequents a l'import, feraient echouer la numerotation.
+const VARIABLES_APPEL = [
+  { cle: "numero", l: "numéro cliqué par l'agent" },
+  { cle: "telephone", l: "téléphone de la fiche" },
+  { cle: "numero_mtn", l: "numéro MTN de la fiche" },
+  { cle: "numero_box", l: "numéro de box" },
+  { cle: "numero_fiche", l: "numéro de fiche" },
+  { cle: "matricule", l: "matricule de l'agent" },
+];
+
+function numeroComposable(numero) {
+  const chiffres = String(formaterTelephone(numero) || "").replace(/(?!^\+)[^\d]/g, "");
+  return /^\d{9}$/.test(chiffres) ? `0${chiffres}` : chiffres;
+}
+
+// Adresse web d'Axterix, ou logiciel de telephonie du poste (tel:, sip:,
+// callto:). Rien d'autre : pas de javascript: ni de data:.
+function lienAppelValide(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(String(url).trim());
+    return ["http:", "https:", "tel:", "sip:", "callto:"].includes(u.protocol) ? u.href : null;
+  } catch { return null; }
+}
+
+function construireLienAppel(modele, fiche, numero, matricule) {
+  const composable = numeroComposable(numero);
+  if (!modele || !composable) return null;
+  const base = String(modele)
+    .replace(/\{numero\}/g, composable)
+    .replace(/\{matricule\}/g, encodeURIComponent(matricule || ""));
+  return lienAppelValide(appliquerVariables(base, fiche));
+}
+
+function lancerAppel(url) {
+  if (!url) return;
+  if (/^https?:/i.test(url)) window.open(url, "_blank", "noopener,noreferrer");
+  else window.location.href = url;   // tel:, sip:, callto: : le logiciel du poste prend la main
+}
+
 function styleCategorie(categorie, icone, couleur) {
   const base = CATEGORY_STYLE[categorie] || FALLBACK_STYLE;
   const choisie = ICONES_QUALIFICATION.find((i) => i.cle === icone);
@@ -380,6 +424,23 @@ function valeurCellule(row, entete) {
   return s === "" ? null : s;
 }
 
+// Numero de telephone ivoirien : 10 chiffres. Excel lit souvent la colonne
+// comme un nombre et perd le 0 initial (0507118074 devient 507118074), et les
+// fichiers contiennent des numeros ecrits "07 07 12 34 56", ou saisis avec la
+// lettre O a la place du zero ("O507118074"). On retire donc les espaces, on
+// remplace les O par des 0 quand le resultat n'est fait que de chiffres, puis
+// on remet le 0 initial quand il reste exactement 9 chiffres. Tout autre
+// format (indicatif +225, numero incomplet...) est garde tel quel, sans les
+// espaces : on ne devine pas ce qu'on ne sait pas corriger.
+function formaterTelephone(v) {
+  if (v === null || v === undefined) return null;
+  let s = String(v).replace(/\s+/g, "");
+  if (s === "") return null;
+  const sansO = s.replace(/[Oo]/g, "0");
+  if (/^\d{9,10}$/.test(sansO)) s = sansO;
+  return /^\d{9}$/.test(s) ? `0${s}` : s;
+}
+
 function rowsToClients(rows, lotId, parCle, extras) {
   return rows.map((r) => {
     const donnees = {};
@@ -391,8 +452,8 @@ function rowsToClients(rows, lotId, parCle, extras) {
       numero_box: valeurCellule(r, parCle.numero_box),
       nom: valeurCellule(r, parCle.nom) || "Sans nom",
       entreprise: valeurCellule(r, parCle.entreprise),
-      telephone: valeurCellule(r, parCle.telephone),
-      numero_mtn: valeurCellule(r, parCle.numero_mtn),
+      telephone: formaterTelephone(valeurCellule(r, parCle.telephone)),
+      numero_mtn: formaterTelephone(valeurCellule(r, parCle.numero_mtn)),
       segment: valeurCellule(r, parCle.segment),
       commune: valeurCellule(r, parCle.commune),
       email: valeurCellule(r, parCle.email),
@@ -844,10 +905,11 @@ function Workspace({ session, onLogout, onProfilChange }) {
   }, [accessToken]);
   useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 30000); return () => clearInterval(t); }, [compterNonLus]);
 
-  // Pastille de l'onglet Qualite : evaluations non lues (agent), contestations
+  // Pastille de l'onglet Qualite : evaluations a valider ou contester, et
+  // decisions rendues pas encore vues (agent) ; contestations
   // a trancher (superviseur, admin). Toutes les 2 minutes suffisent, rien
   // n'y est urgent a la seconde.
-  const [qcCompteurs, setQcCompteurs] = useState({ non_lues: 0, contestations: 0 });
+  const [qcCompteurs, setQcCompteurs] = useState({ a_traiter: 0, decisions: 0, non_lues: 0, contestations: 0 });
   const chargerQcCompteurs = useCallback(async () => {
     try { const r = await rpc("qc_compteurs", accessToken, {}); if (r) setQcCompteurs(r); } catch {}
   }, [accessToken]);
@@ -977,7 +1039,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <nav className="px-3 pt-5 flex flex-col gap-1">
               {TAB_DEFS.filter((t) => effectiveTabs.has(t.id)).map((t) => (
                 <NavItem key={t.id} icon={t.icon} label={t.id === "qualite" && role === "agent" ? "Mes évaluations" : t.label} active={adminTab === t.id} onClick={() => setAdminTab(t.id)}
-                  pastille={t.id === "messagerie" ? nonLus : t.id === "qualite" ? (role === "agent" ? qcCompteurs.non_lues : qcCompteurs.contestations) : 0} />
+                  pastille={t.id === "messagerie" ? nonLus : t.id === "qualite" ? (role === "agent" ? (qcCompteurs.a_traiter ?? qcCompteurs.non_lues) + (qcCompteurs.decisions || 0) : qcCompteurs.contestations) : 0} />
               ))}
             </nav>
           </div>
@@ -1048,7 +1110,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <ErrorBlock message={treeError} />
           ) : (
             <>
-              {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} />}
+              {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} matricule={profil?.matricule} />}
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "supervision" && effectiveTabs.has("supervision") && <SupervisionPanel accessToken={accessToken} callerRole={profil?.role} />}
               {adminTab === "qualite" && effectiveTabs.has("qualite") && <QualitePanel accessToken={accessToken} role={role === "agent" ? "agent" : profil?.role} moiId={session.user.id} onCompteurs={chargerQcCompteurs} compteurs={qcCompteurs} />}
@@ -1104,8 +1166,15 @@ function NavItem({ icon: Icon, label, active, onClick, pastille }) {
 
 /* ---------------------------------- vue agent ---------------------------------- */
 
-function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, presenceBump }) {
+function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, presenceBump, matricule }) {
   const [view, setView] = useState("poste"); // poste | recherche
+  // Modele du lien d'appel Axterix. Vide tant que l'outil n'est pas branche :
+  // le bouton reste alors visible mais inactif.
+  const [lienAppel, setLienAppel] = useState(null);
+  useEffect(() => {
+    supaRest("supervision_seuils?select=lien_appel&id=eq.1", { accessToken })
+      .then(([r]) => setLienAppel(r?.lien_appel || null)).catch(() => {});
+  }, [accessToken]);
   const [fiche, setFiche] = useState(null);
   const [pulling, setPulling] = useState(false);
   const ficheStartRef = useRef(null);
@@ -1504,7 +1573,10 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
               </div>
             )}
             <div className="px-5 py-5">
-              <h2 className="disp" style={{ fontSize: 19, fontWeight: 700 }}>{fiche.nom}</h2>
+              <div className="flex items-start justify-between" style={{ gap: 12, flexWrap: "wrap" }}>
+                <h2 className="disp" style={{ fontSize: 19, fontWeight: 700 }}>{fiche.nom}</h2>
+                <BoutonsAppel fiche={fiche} lienAppel={lienAppel} matricule={matricule} />
+              </div>
               <div style={{ height: 1, background: C.borderSoft, margin: "16px 0" }} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 {champsFicheAAfficher(campagneInfo?.champs).map((ch) => {
@@ -1981,6 +2053,33 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduct
   );
 }
 
+// Un bouton par numero de la fiche (telephone, et numero MTN s'il differe).
+function BoutonsAppel({ fiche, lienAppel, matricule }) {
+  const numeros = [];
+  for (const [cle, libelle] of [["telephone", "Téléphone"], ["numero_mtn", "N° MTN"]]) {
+    const v = fiche?.[cle];
+    if (v && !numeros.some((n) => numeroComposable(n.valeur) === numeroComposable(v))) numeros.push({ cle, libelle, valeur: v });
+  }
+  if (numeros.length === 0) return null;
+  return (
+    <div className="flex" style={{ gap: 6, flexWrap: "wrap" }}>
+      {numeros.map((n) => {
+        const url = construireLienAppel(lienAppel, fiche, n.valeur, matricule);
+        return (
+          <button key={n.cle} onClick={() => lancerAppel(url)} disabled={!url}
+            title={url ? `Appeler le ${n.valeur} via Axterix` : "L'appel depuis Auréo sera disponible quand Axterix sera branché (un administrateur doit renseigner le lien d'appel)."}
+            style={{ display: "flex", alignItems: "center", gap: 7, background: url ? C.green : C.borderSoft, color: url ? "#fff" : C.mutedSoft, border: "none", borderRadius: 999, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: url ? "pointer" : "not-allowed" }}>
+            <PhoneCall size={14} />
+            <span>Appeler</span>
+            <span className="mono" style={{ fontWeight: 500, opacity: 0.9 }}>{n.valeur}</span>
+            {numeros.length > 1 && <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{n.libelle}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function FicheField({ label, value, icon: Icon, mono }) {
   return (
     <div>
@@ -2050,8 +2149,8 @@ function CreateClientPanel({ accessToken, agentId, onClose, onCreated }) {
         method: "POST", accessToken,
         body: {
           nom: form.nom.trim(),
-          telephone: form.telephone.trim() || null,
-          numero_mtn: form.numero_mtn.trim() || null,
+          telephone: formaterTelephone(form.telephone),
+          numero_mtn: formaterTelephone(form.numero_mtn),
           segment: form.segment.trim() || null,
           commune: form.commune.trim() || null,
           numero_box: form.numero_box.trim() || null,
@@ -2231,8 +2330,8 @@ function SearchPanel({ accessToken, tree, isAdmin }) {
         method: "PATCH", accessToken,
         body: {
           nom: editForm.nom.trim(),
-          telephone: editForm.telephone.trim() || null,
-          numero_mtn: editForm.numero_mtn.trim() || null,
+          telephone: formaterTelephone(editForm.telephone),
+          numero_mtn: formaterTelephone(editForm.numero_mtn),
           numero_box: newBox || null,
           segment: editForm.segment.trim() || null,
           commune: editForm.commune.trim() || null,
@@ -3059,7 +3158,8 @@ const REPONSES_QC = [
 
 const STATUTS_QC = {
   publiee: { l: "Non lue", color: C.amber, soft: C.amberSoft },
-  lue: { l: "Lue", color: C.muted, soft: C.borderSoft },
+  lue: { l: "Lue, sans réponse", color: C.muted, soft: C.borderSoft },
+  validee: { l: "Validée", color: C.green, soft: C.greenSoft },
   contestee: { l: "Contestée", color: C.red, soft: C.redSoft },
   maintenue: { l: "Maintenue", color: C.muted, soft: C.borderSoft },
   revisee: { l: "Révisée", color: C.teal, soft: C.tealSoft },
@@ -3075,6 +3175,13 @@ const RAISONS_QC = {
 
 const OBJECTIF_EVALUATIONS_SEMAINE = 4;
 const DELAI_CONTESTATION_JOURS = 7;
+
+// L'agent doit valider ou contester : tant qu'il n'a fait ni l'un ni l'autre
+// et que le delai court, l'evaluation attend sa reponse.
+function evaluationATraiter(ev) {
+  return ["publiee", "lue"].includes(ev.statut)
+    && Date.now() - new Date(ev.created_at).getTime() <= DELAI_CONTESTATION_JOURS * 86400000;
+}
 
 // Variables du lien d'enregistrement. L'heure est celle d'Abidjan, ecrite en
 // toutes lettres : c'est l'heure que l'outil d'enregistrement affichera, quel
@@ -3169,22 +3276,24 @@ function QualitePanel({ accessToken, role, moiId, onCompteurs, compteurs }) {
     ...(estCoach ? [{ id: "a_evaluer", l: "À évaluer" }] : []),
     { id: "evaluations", l: "Évaluations" },
     ...(estArbitre ? [{ id: "contestations", l: "Contestations", n: compteurs?.contestations || 0 }] : []),
-    ...(estAdmin ? [{ id: "reglages", l: "Grille et enregistrement" }] : []),
+    ...(estAdmin ? [{ id: "reglages", l: "Grille et Axterix" }] : []),
   ];
   const [vue, setVue] = useState(estAgent ? "evaluations" : vues[0].id);
 
   const [grilles, setGrilles] = useState(null);
   const [lienModele, setLienModele] = useState(null);
+  const [lienAppel, setLienAppel] = useState(null);
   const [error, setError] = useState(null);
 
   const chargerReferentiel = useCallback(async () => {
     try {
       const [g, [s]] = await Promise.all([
         supaRest("qc_grilles?select=id,version,contenu,actif,created_at&order=version.desc", { accessToken }),
-        supaRest("supervision_seuils?select=lien_enregistrement&id=eq.1", { accessToken }),
+        supaRest("supervision_seuils?select=lien_enregistrement,lien_appel&id=eq.1", { accessToken }),
       ]);
       setGrilles(g);
       setLienModele(s?.lien_enregistrement || null);
+      setLienAppel(s?.lien_appel || null);
     } catch (e) { setError(e.message); }
   }, [accessToken]);
   useEffect(() => { chargerReferentiel(); }, [chargerReferentiel]);
@@ -3231,7 +3340,7 @@ function QualitePanel({ accessToken, role, moiId, onCompteurs, compteurs }) {
               lienModele={lienModele} onCompteurs={onCompteurs} contestationsSeules />
           )}
           {vue === "reglages" && (
-            <QcReglages accessToken={accessToken} grilleActive={grilleActive} lienModele={lienModele} onEnregistre={chargerReferentiel} />
+            <QcReglages accessToken={accessToken} grilleActive={grilleActive} lienModele={lienModele} lienAppelModele={lienAppel} onEnregistre={chargerReferentiel} />
           )}
         </>
       )}
@@ -3362,6 +3471,9 @@ function QcAEvaluer({ accessToken, grille, lienModele }) {
 
 function QcRecapAppel({ appel, lienModele }) {
   const lien = lienEnregistrement(lienModele, appel);
+  // Le commentaire laisse par l'agent en qualifiant l'appel. Sur une
+  // evaluation, "commentaire" est celui du coach : ne pas les confondre.
+  const commentaireAppel = "qualification_commentaire" in appel ? appel.qualification_commentaire : appel.commentaire;
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 14 }}>
       <div className="flex items-start justify-between" style={{ gap: 12, flexWrap: "wrap" }}>
@@ -3377,8 +3489,8 @@ function QcRecapAppel({ appel, lienModele }) {
           <div className="mono" style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
             Fiche #{appel.numero_fiche} · {appel.client_nom || "—"} · {appel.telephone || "—"}{appel.numero_box ? ` · box ${appel.numero_box}` : ""}
           </div>
-          {(appel.commentaire || appel.qualification_commentaire) && (
-            <div style={{ fontSize: 12, color: C.text, marginTop: 6, fontStyle: "italic" }}>« {appel.commentaire || appel.qualification_commentaire} »</div>
+          {commentaireAppel && (
+            <div style={{ fontSize: 12, color: C.text, marginTop: 6, fontStyle: "italic" }}>« {commentaireAppel} »</div>
           )}
         </div>
         {lien ? (
@@ -3661,8 +3773,11 @@ function QcListe({ accessToken, role, moiId, grillesParId, lienModele, onCompteu
               </tr>
             </thead>
             <tbody>
-              {selection.map((r) => (
-                <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}`, background: estAgent && r.statut === "publiee" ? C.amberSoft : undefined, opacity: r.statut === "annulee" ? 0.55 : 1 }}>
+              {selection.map((r) => {
+                const aTraiter = estAgent && evaluationATraiter(r);
+                const decisionNonVue = estAgent && r.arbitree_le && !r.decision_lue_le;
+                return (
+                <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}`, background: aTraiter ? C.amberSoft : decisionNonVue ? C.tealSoft : undefined, opacity: r.statut === "annulee" && !decisionNonVue ? 0.55 : 1 }}>
                   <td className="mono" style={{ padding: "9px 14px", color: C.muted, whiteSpace: "nowrap" }}>{new Date(r.created_at).toLocaleDateString("fr-FR")}</td>
                   {!estAgent && <td style={{ padding: "9px 14px", fontWeight: 600 }}>{r.agent_nom}</td>}
                   <td style={{ padding: "9px 14px", color: C.muted }}>{r.evaluateur_nom}</td>
@@ -3674,12 +3789,13 @@ function QcListe({ accessToken, role, moiId, grillesParId, lienModele, onCompteu
                   <td style={{ padding: "9px 14px" }}><PastilleQc meta={STATUTS_QC[r.statut] || STATUTS_QC.lue} /></td>
                   <td style={{ padding: "9px 14px", textAlign: "right" }}>
                     <button onClick={() => setOuverte(r.id)}
-                      style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 600 }}>
-                      {contestationsSeules ? "Trancher" : "Voir"}
+                      style={{ background: aTraiter ? C.amber : decisionNonVue ? C.teal : C.ink, color: aTraiter ? C.ink : "#fff", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 700 }}>
+                      {contestationsSeules ? "Trancher" : aTraiter ? "Valider ou contester" : decisionNonVue ? "Voir la décision" : "Voir"}
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -3693,6 +3809,7 @@ function QcDetail({ accessToken, ev, role, moiId, grille, lienModele, onRetour, 
   const [occupe, setOccupe] = useState(false);
   const [motif, setMotif] = useState("");
   const [contestationOuverte, setContestationOuverte] = useState(false);
+  const [validationOuverte, setValidationOuverte] = useState(false);
   const [decision, setDecision] = useState(null);         // 'maintenue' | 'revisee' | 'annulee'
   const [commentaireArbitrage, setCommentaireArbitrage] = useState("");
   const [revisionEnCours, setRevisionEnCours] = useState(false);
@@ -3701,23 +3818,29 @@ function QcDetail({ accessToken, ev, role, moiId, grille, lienModele, onRetour, 
   const cEstMoi = ev.agent_id === moiId;
   const estArbitre = ["superviseur", "admin", "super_admin"].includes(role);
   const joursEcoules = (Date.now() - new Date(ev.created_at).getTime()) / 86400000;
-  const peutContester = cEstMoi && ["publiee", "lue"].includes(ev.statut) && joursEcoules <= DELAI_CONTESTATION_JOURS;
+  const peutRepondre = cEstMoi && evaluationATraiter(ev);
   const peutSupprimer = role === "super_admin" || (ev.evaluateur_id === moiId && ev.statut === "publiee");
 
-  // L'agent qui ouvre son evaluation l'a lue : on le note une fois.
+  // L'agent qui ouvre son evaluation l'a lue, et a vu la decision du
+  // superviseur s'il y en a une : on le note une fois.
   const dejaMarqueeRef = useRef(false);
+  const aMarquer = ev.statut === "publiee" || (ev.arbitree_le && !ev.decision_lue_le);
   useEffect(() => {
-    if (cEstMoi && ev.statut === "publiee" && !dejaMarqueeRef.current) {
+    if (cEstMoi && aMarquer && !dejaMarqueeRef.current) {
       dejaMarqueeRef.current = true;
       rpc("qc_marquer_lue", accessToken, { p_evaluation_id: ev.id }).then(() => onAction(ev.id)).catch(() => {});
     }
-  }, [cEstMoi, ev.statut, ev.id, accessToken, onAction]);
+  }, [cEstMoi, aMarquer, ev.id, accessToken, onAction]);
 
   async function executer(fn) {
     setOccupe(true); setError(null);
     try { await fn(); } catch (e) { setError(e.message); } finally { setOccupe(false); }
   }
 
+  const valider = () => executer(async () => {
+    await rpc("qc_valider", accessToken, { p_evaluation_id: ev.id });
+    setValidationOuverte(false); await onAction(ev.id);
+  });
   const contester = () => executer(async () => {
     await rpc("qc_contester", accessToken, { p_evaluation_id: ev.id, p_motif: motif });
     setContestationOuverte(false); await onAction(ev.id);
@@ -3772,6 +3895,57 @@ function QcDetail({ accessToken, ev, role, moiId, grille, lienModele, onRetour, 
         </div>
       </div>
 
+      {peutRepondre && (
+        <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Votre réponse à cette évaluation</div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+            Lisez la note, le commentaire et le détail plus bas, puis validez-la ou contestez-la.
+            {" "}Il vous reste {Math.max(1, Math.ceil(DELAI_CONTESTATION_JOURS - joursEcoules))} jour{Math.ceil(DELAI_CONTESTATION_JOURS - joursEcoules) > 1 ? "s" : ""}.
+          </div>
+          {!validationOuverte && !contestationOuverte && (
+            <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
+              <button onClick={() => setValidationOuverte(true)}
+                style={{ display: "flex", alignItems: "center", gap: 6, background: C.green, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700 }}>
+                <ThumbsUp size={14} /> Valider
+              </button>
+              <button onClick={() => setContestationOuverte(true)}
+                style={{ display: "flex", alignItems: "center", gap: 6, background: C.surface, color: C.red, border: `1px solid ${C.red}`, borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700 }}>
+                <ThumbsDown size={14} /> Contester
+              </button>
+            </div>
+          )}
+          {validationOuverte && (
+            <div className="flex items-center gap-2" style={{ flexWrap: "wrap", fontSize: 12.5 }}>
+              <span>Vous confirmez être d'accord avec cette évaluation ? Vous ne pourrez plus la contester.</span>
+              <button onClick={valider} disabled={occupe}
+                style={{ background: C.green, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700 }}>
+                {occupe ? "Enregistrement…" : "Oui, je valide"}
+              </button>
+              <button onClick={() => setValidationOuverte(false)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5 }}>Annuler</button>
+            </div>
+          )}
+          {contestationOuverte && (
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Qu'est-ce que vous contestez ? Votre superviseur tranchera.</div>
+              <textarea value={motif} onChange={(e) => setMotif(e.target.value)} rows={3} style={zoneTexte}
+                placeholder="Par exemple : le client avait bien décroché, il a raccroché au bout de 5 secondes." />
+              <div className="flex gap-2 mt-2">
+                <button onClick={contester} disabled={occupe || !motif.trim()}
+                  style={{ background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700 }}>
+                  {occupe ? "Envoi…" : "Envoyer la contestation"}
+                </button>
+                <button onClick={() => setContestationOuverte(false)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5 }}>Annuler</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {ev.validee_le && (
+        <div className="flex items-center gap-2" style={{ background: C.greenSoft, color: C.green, borderRadius: 9, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, marginBottom: 12 }}>
+          <CheckCircle2 size={14} /> {cEstMoi ? "Vous avez validé" : `${ev.agent_nom} a validé`} cette évaluation le {new Date(ev.validee_le).toLocaleDateString("fr-FR")}.
+        </div>
+      )}
+
       {(ev.commentaire || ev.axes_progres) && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
           {[{ l: "Commentaire du coach", v: ev.commentaire }, { l: "Axes de progrès", v: ev.axes_progres }].map((b) => (
@@ -3803,31 +3977,8 @@ function QcDetail({ accessToken, ev, role, moiId, grille, lienModele, onRetour, 
       {error && <div className="mb-3"><ErrorBlock message={error} /></div>}
 
       {/* ---- actions ---- */}
-      {peutContester && (
-        <div className="mb-3">
-          {!contestationOuverte ? (
-            <button onClick={() => setContestationOuverte(true)}
-              style={{ background: C.surface, border: `1px solid ${C.red}`, color: C.red, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
-              Contester cette évaluation
-            </button>
-          ) : (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Qu'est-ce que vous contestez ? Votre superviseur tranchera.</div>
-              <textarea value={motif} onChange={(e) => setMotif(e.target.value)} rows={3} style={zoneTexte}
-                placeholder="Par exemple : le client avait bien décroché, il a raccroché au bout de 5 secondes." />
-              <div className="flex gap-2 mt-2">
-                <button onClick={contester} disabled={occupe || !motif.trim()}
-                  style={{ background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
-                  {occupe ? "Envoi…" : "Envoyer la contestation"}
-                </button>
-                <button onClick={() => setContestationOuverte(false)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5 }}>Annuler</button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      {cEstMoi && ["publiee", "lue"].includes(ev.statut) && !peutContester && (
-        <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 12 }}>Le délai de contestation ({DELAI_CONTESTATION_JOURS} jours) est dépassé.</p>
+      {cEstMoi && ["publiee", "lue"].includes(ev.statut) && !peutRepondre && (
+        <p style={{ fontSize: 11.5, color: C.mutedSoft, marginBottom: 12 }}>Le délai de réponse ({DELAI_CONTESTATION_JOURS} jours) est dépassé : l'évaluation est considérée comme acceptée.</p>
       )}
 
       {estArbitre && ev.statut === "contestee" && !cEstMoi && (
@@ -3910,9 +4061,10 @@ function QcDetail({ accessToken, ev, role, moiId, grille, lienModele, onRetour, 
 
 /* ---- reglages (admin) : grille et lien d'enregistrement ---- */
 
-function QcReglages({ accessToken, grilleActive, lienModele, onEnregistre }) {
+function QcReglages({ accessToken, grilleActive, lienModele, lienAppelModele, onEnregistre }) {
   const [brouillon, setBrouillon] = useState(() => JSON.parse(JSON.stringify(grilleActive?.contenu || { sections: [], eliminatoires: [], niveaux: [{ min: 0, libelle: "Non conforme" }] })));
   const [lien, setLien] = useState(lienModele || "");
+  const [lienAppelSaisi, setLienAppelSaisi] = useState(lienAppelModele || "");
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
   const [occupe, setOccupe] = useState(false);
@@ -3935,6 +4087,15 @@ function QcReglages({ accessToken, grilleActive, lienModele, onEnregistre }) {
       };
       await rpc("qc_publier_grille", accessToken, { p_contenu: propre });
       setMessage("Nouvelle version de la grille publiée. Les évaluations déjà faites gardent leur grille d'origine.");
+      await onEnregistre();
+    } catch (e) { setError(e.message); } finally { setOccupe(false); }
+  }
+
+  async function enregistrerLienAppel() {
+    setOccupe(true); setError(null); setMessage(null);
+    try {
+      await rpc("regler_lien_appel", accessToken, { p_lien: lienAppelSaisi });
+      setMessage(lienAppelSaisi.trim() ? "Lien d'appel enregistré : le bouton « Appeler » est actif sur les fiches." : "Lien d'appel retiré : le bouton « Appeler » est inactif.");
       await onEnregistre();
     } catch (e) { setError(e.message); } finally { setOccupe(false); }
   }
@@ -3962,6 +4123,39 @@ function QcReglages({ accessToken, grilleActive, lienModele, onEnregistre }) {
           <CheckCircle2 size={15} /> {message}
         </div>
       )}
+
+      {/* ---- lien d'appel ---- */}
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Lien d'appel (Axterix)</div>
+        <p style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+          L'adresse qui lance un appel dans Axterix quand l'agent clique sur « Appeler » dans sa fiche : une adresse web
+          (https://…) ou un logiciel de téléphonie du poste (tel:, sip:, callto:). Laissez vide tant qu'Axterix n'est pas prêt : le bouton reste inactif.
+        </p>
+        <div className="flex gap-2">
+          <input value={lienAppelSaisi} onChange={(e) => setLienAppelSaisi(e.target.value)} placeholder="https://axterix.exemple/appel?numero={numero}&agent={matricule}"
+            style={{ ...champ, flex: 1 }} />
+          <button onClick={enregistrerLienAppel} disabled={occupe || lienAppelSaisi === (lienAppelModele || "")}
+            style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>
+            Enregistrer
+          </button>
+        </div>
+        <div className="flex" style={{ flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+          {VARIABLES_APPEL.map((v) => (
+            <button key={v.cle} onClick={() => setLienAppelSaisi((l) => l + `{${v.cle}}`)} title={v.l}
+              className="mono" style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 8px", fontSize: 11 }}>
+              {`{${v.cle}}`}
+            </button>
+          ))}
+        </div>
+        {lienAppelSaisi.trim() && (() => {
+          const ex = construireLienAppel(lienAppelSaisi, { telephone: "07 00 00 00 00", numero_mtn: "0500000000", numero_box: "2536000000", numero_fiche: 12345 }, "07 00 00 00 00", "XGS-TC00");
+          return (
+            <div className="mono" style={{ fontSize: 11, color: ex ? C.muted : C.red, marginTop: 8, wordBreak: "break-all" }}>
+              {ex ? `Exemple : ${ex}` : "Adresse invalide : elle doit commencer par https://, http://, tel:, sip: ou callto:"}
+            </div>
+          );
+        })()}
+      </div>
 
       {/* ---- lien d'enregistrement ---- */}
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
