@@ -1931,9 +1931,22 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduct
         );
         const derniereParClient = new Map();
         for (const h of historique) if (!derniereParClient.has(h.client_id)) derniereParClient.set(h.client_id, h);
+        // Une validation de moins de 30 jours verrouille la fiche, meme si
+        // d'autres qualifications l'ont suivie : on la cherche dans tout
+        // l'historique, pas seulement dans la derniere qualification.
+        const validationParClient = new Map();
+        for (const h of historique) {
+          if (!validationParClient.has(h.client_id)
+              && h.types_qualification?.categorie === "Positif" && h.types_qualification?.motif === "Rechargement validé"
+              && maintenant - new Date(h.created_at).getTime() < 30 * 86400000) {
+            validationParClient.set(h.client_id, h);
+          }
+        }
         verrouillees = candidats
           .map((r) => {
             const derniere = derniereParClient.get(r.id);
+            const validation = validationParClient.get(r.id);
+            if (validation) return { ...r, validationDate: validation.created_at, reserveJusqua: null };
             const estRappel = derniere?.types_qualification?.categorie === "À rappeler";
             const estRechargementValide = derniere?.types_qualification?.categorie === "Positif" && derniere?.types_qualification?.motif === "Rechargement validé";
             const echeance = new Date(r.visible_apres).getTime();
