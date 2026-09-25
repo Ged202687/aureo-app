@@ -4425,6 +4425,10 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
   const [stats, setStats] = useState(null);
   const [parAgent, setParAgent] = useState(null);
   const [error, setError] = useState(null);
+  // Ventes attribuees depuis une liste de rechargements constates, et non
+  // obtenues par l'agent depuis son poste : comptees dans le total, mais
+  // montrees a part pour que le classement reste juste.
+  const [liste, setListe] = useState(null);
 
   function toggleDate(iso) {
     setSelected((prev) => prev.includes(iso) ? prev.filter((d) => d !== iso) : [...prev, iso].sort());
@@ -4439,6 +4443,10 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
     try {
       const [row] = await rpc("mes_resultats", accessToken, { p_dates: selected });
       setStats(row || { appels_traites: 0, rechargements_valides: 0, rechargements_valides_mois: 0 });
+      try {
+        const [l] = await rpc("mes_ventes_liste", accessToken, { p_dates: selected });
+        setListe(l || { liste_dates: 0, liste_mois: 0 });
+      } catch { setListe(null); }
       if (montrerDetailParAgent) {
         const rows = await rpc("resultats_par_agent", accessToken, { p_dates: selected });
         setParAgent(rows || []);
@@ -4508,13 +4516,20 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
                 <span style={{ fontSize: 12, color: "#A6ADBA", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em" }}>Rechargements validés</span>
               </div>
               <div className="disp mono" style={{ fontSize: 34, fontWeight: 700, color: C.amber }}>{stats ? stats.rechargements_valides : "…"}</div>
-              <div style={{ fontSize: 11.5, color: "#8B93A3", marginTop: 4 }}>Sur les dates sélectionnées</div>
+              <div style={{ fontSize: 11.5, color: "#8B93A3", marginTop: 4 }}>
+                {stats && liste?.liste_dates > 0
+                  ? `Dont ${stats.rechargements_valides - liste.liste_dates} réalisés et ${liste.liste_dates} attribués depuis une liste`
+                  : "Sur les dates sélectionnées"}
+              </div>
             </div>
           </div>
           <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, padding: "16px 20px" }} className="flex items-center justify-between">
             <div>
               <div style={{ fontSize: 12, color: C.ink, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em" }}>Total rechargements validés — {MOIS_NOMS[new Date().getMonth()]}</div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Sur le mois calendaire en cours, indépendamment des dates choisies ci-dessus.</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                Sur le mois calendaire en cours, indépendamment des dates choisies ci-dessus.
+                {stats && liste?.liste_mois > 0 && ` Dont ${stats.rechargements_valides_mois - liste.liste_mois} réalisés et ${liste.liste_mois} attribués depuis une liste de rechargements constatés.`}
+              </div>
             </div>
             <div className="disp mono" style={{ fontSize: 30, fontWeight: 700, color: C.ink }}>{stats ? stats.rechargements_valides_mois : "…"}</div>
           </div>
@@ -4523,7 +4538,9 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
               <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.borderSoft}` }}>
                 <h2 className="disp" style={{ fontSize: 14, fontWeight: 700 }}>Détail par agent</h2>
-                <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 2 }}>Sur les mêmes dates sélectionnées ci-contre.</p>
+                <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 2 }}>
+                  Sur les mêmes dates sélectionnées ci-contre. « Réalisés » : validés par l'agent depuis son poste ; « Liste » : attribués depuis une liste de rechargements constatés.
+                </p>
               </div>
               {parAgent === null ? (
                 <div style={{ padding: 20 }}><CenterLoader /></div>
@@ -4533,7 +4550,7 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   <thead>
                     <tr style={{ background: C.canvas, textAlign: "left" }}>
-                      {["Agent", "Fiches traitées", "Fiches contactées", "Rechargements validés"].map((h) => (
+                      {["Agent", "Fiches traitées", "Fiches contactées", "Rechargements validés", "Réalisés", "Liste"].map((h) => (
                         <th key={h} style={{ padding: "9px 20px", color: C.muted, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                       ))}
                     </tr>
@@ -4545,6 +4562,8 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
                         <td className="mono" style={{ padding: "8px 20px" }}>{a.fiches_traitees}</td>
                         <td className="mono" style={{ padding: "8px 20px" }}>{a.fiches_contactees}</td>
                         <td className="mono" style={{ padding: "8px 20px", color: C.amber, fontWeight: 600 }}>{a.rechargements_valides}</td>
+                        <td className="mono" style={{ padding: "8px 20px", fontWeight: 600 }}>{a.rechargements_valides - (a.rechargements_liste || 0)}</td>
+                        <td className="mono" style={{ padding: "8px 20px", color: C.mutedSoft }}>{a.rechargements_liste ?? "—"}</td>
                       </tr>
                     ))}
                   </tbody>
