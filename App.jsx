@@ -5541,7 +5541,21 @@ function ExportPanel({ accessToken }) {
 
   const lotsDisponibles = lots ? (campagneId ? lots.filter((l) => l.campagne_id === campagneId) : lots) : [];
   const categoriesDisponibles = typesQualif ? [...new Set(typesQualif.map((t) => t.categorie))] : [];
-  const motifsDisponibles = typesQualif ? typesQualif.filter((t) => !categorieFiltre || t.categorie === categorieFiltre) : [];
+  // Un motif par nom : le meme motif peut exister dans deux categories
+  // ("Rechargement ultérieur non précisé" est a la fois un Contact et un
+  // Injoignable). Le filtre porte sur le nom, il retient donc les deux ; la
+  // liste l'affiche une seule fois, avec ses categories quand il y en a
+  // plusieurs.
+  const motifsDisponibles = useMemo(() => {
+    const parMotif = new Map();
+    for (const t of typesQualif || []) {
+      if (categorieFiltre && t.categorie !== categorieFiltre) continue;
+      const cats = parMotif.get(t.motif) || [];
+      if (!cats.includes(t.categorie)) cats.push(t.categorie);
+      parMotif.set(t.motif, cats);
+    }
+    return [...parMotif.entries()].map(([motif, categories]) => ({ motif, categories }));
+  }, [typesQualif, categorieFiltre]);
 
   async function loadPreview() {
     const figes = { ...criteres };
@@ -5687,7 +5701,11 @@ function ExportPanel({ accessToken }) {
             <select value={motifFiltre} onChange={(e) => setMotifFiltre(e.target.value)}
               style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, background: C.surface }}>
               <option value="">{categorieFiltre ? "Tous les motifs de cette catégorie" : "Tous les motifs"}</option>
-              {motifsDisponibles.map((t) => <option key={t.motif} value={t.motif}>{t.motif}</option>)}
+              {motifsDisponibles.map((t) => (
+                <option key={t.motif} value={t.motif}>
+                  {t.categories.length > 1 ? `${t.motif} (${t.categories.join(", ")})` : t.motif}
+                </option>
+              ))}
             </select>
           </div>
         </div>
