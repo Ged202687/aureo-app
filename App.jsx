@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Fragment } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { createClient } from "@supabase/supabase-js";
 import {
   Clock, CheckCircle2, XCircle, PhoneOff, LayoutDashboard, ListChecks, Upload,
   FileSpreadsheet, Plus, Trash2, UserCircle2, FastForward, Inbox, ArrowRight,
@@ -15,17 +16,6 @@ import {
 const SUPABASE_URL = "https://fipvndiueabrehsmqxth.supabase.co";
 const SUPABASE_KEY = "sb_publishable_aNR2zGeJS9UgYLnvsvtVaw_tItHLC10";
 const SUPABASE_ANON_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpcHZuZGl1ZWFicmVoc21xeHRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxNTA0MjUsImV4cCI6MjEwMjcyNjQyNX0.PTPShNDncsT793-fBMP-Ko2gk3trOGtuwWYQ3L450j8";
-
-async function supaAuth(path, body) {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", apikey: SUPABASE_KEY },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error_description || data.msg || data.error || "Erreur d'authentification");
-  return data;
-}
 
 async function supaUpdatePassword(accessToken, newPassword) {
   const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
@@ -556,24 +546,54 @@ function hoursDecimal(totalSeconds) {
 
 /* ---------------------------------- app racine ---------------------------------- */
 
-const SESSION_STORAGE_KEY = "aureo_session";
+// Session partagee avec le portail XGS et les autres outils.
+//
+// La session n'est plus geree a la main : c'est le client officiel Supabase
+// qui la garde, sous sa cle standard (sb-<projet>-auth-token), la meme que
+// celle du portail, de Meridien et d'Horizon. Servis depuis la meme adresse
+// (portail/, portail/aureo/...), ces outils partagent donc une seule
+// connexion.
+//
+// Le client officiel renouvelle aussi le jeton lui-meme, et coordonne ce
+// renouvellement entre les onglets et les outils ouverts. C'est essentiel :
+// deux outils qui renouvelaient chacun de leur cote la meme session
+// seraient vus par Supabase comme un vol de jeton, et l'agent serait
+// deconnecte partout.
+//
+// Les donnees, elles, continuent de passer par supaRest et rpc avec le jeton
+// d'acces de la session : rien d'autre ne change dans l'application.
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+});
 
-function saveSessionStorage(s) {
-  try {
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
-      accessToken: s.accessToken, refreshToken: s.refreshToken,
-      userId: s.user.id, email: s.user.email, connectedAt: s.connectedAt,
-    }));
-  } catch {}
+// Auréo ouvert depuis le portail (portail/aureo/) plutot qu'a sa propre
+// adresse : la connexion et la deconnexion se font alors sur le portail.
+const SOUS_PORTAIL = typeof window !== "undefined" && /^\/aureo(\/|$)/.test(window.location.pathname);
+function allerAuPortail() {
+  window.location.replace(`/?retour=${encodeURIComponent(window.location.pathname)}`);
 }
-function clearSessionStorage() {
-  try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch {}
-}
-function loadSessionStorage() {
+
+// Ancienne session d'Auréo (avant le client officiel), reprise une fois pour
+// ne pas deconnecter les agents deja connectes au moment de la mise a jour.
+const ANCIENNE_CLE_SESSION = "aureo_session";
+
+// Debut de la session Auréo, pour le chronometre de connexion. Distinct de la
+// connexion au portail : un agent peut s'etre connecte le matin au portail
+// et n'ouvrir Auréo qu'a 10 h.
+const CLE_OUVERTURE = "aureo_ouverture";
+function lireOuverture(userId) {
   try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const o = JSON.parse(localStorage.getItem(CLE_OUVERTURE) || "null");
+    return o && o.userId === userId ? o.debut : null;
   } catch { return null; }
+}
+function noterOuverture(userId) {
+  const debut = Date.now();
+  try { localStorage.setItem(CLE_OUVERTURE, JSON.stringify({ userId, debut })); } catch {}
+  return debut;
+}
+function effacerOuverture() {
+  try { localStorage.removeItem(CLE_OUVERTURE); } catch {}
 }
 
 export default function App() {
@@ -582,38 +602,65 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState(null);
 
-  // Restauration de la session au chargement de la page (F5, fermeture puis
-  // réouverture de l'onglet...). Si le jeton stocké a expiré, on tente un
-  // rafraîchissement avant d'abandonner et de revenir à l'écran de connexion.
+  // Transforme une session Supabase en session Auréo : profil, compte actif,
+  // et premiere ouverture d'Auréo pour cet agent (statut "en pause", comme a
+  // la connexion : l'agent passe lui-meme en production).
+  const ouvrirSession = useCallback(async (s) => {
+    const accessToken = s.access_token;
+    const rows = await supaRest(`profils?select=*&id=eq.${s.user.id}`, { accessToken });
+    let profil = rows[0] || null;
+    if (!profil) throw new Error("Profil introuvable.");
+    if (profil.actif === false) throw new Error("Ce compte a été désactivé. Contactez un administrateur.");
+    let connectedAt = lireOuverture(s.user.id);
+    if (!connectedAt) {
+      connectedAt = noterOuverture(s.user.id);
+      try { profil = await rpc("set_my_status", accessToken, { p_statut: "en_pause" }); } catch {}
+    }
+    return { accessToken, refreshToken: s.refresh_token, user: { id: s.user.id, email: s.user.email }, profil, connectedAt };
+  }, []);
+
+  // Au chargement : la session du portail ou d'un autre outil si elle existe,
+  // sinon l'ancienne session d'Auréo, reprise une fois.
   useEffect(() => {
     (async () => {
-      const saved = loadSessionStorage();
-      if (!saved || !saved.accessToken || !saved.userId) { setRestoring(false); return; }
       try {
-        let accessToken = saved.accessToken;
-        let refreshToken = saved.refreshToken;
-        let profilRows = await supaRest(`profils?select=*&id=eq.${saved.userId}`, { accessToken }).catch(() => null);
-        if (!profilRows) {
-          if (!refreshToken) throw new Error("session expirée");
-          const refreshed = await supaAuth("token?grant_type=refresh_token", { refresh_token: refreshToken });
-          accessToken = refreshed.access_token;
-          refreshToken = refreshed.refresh_token;
-          profilRows = await supaRest(`profils?select=*&id=eq.${saved.userId}`, { accessToken });
+        let { data: { session: s } } = await supabase.auth.getSession();
+        if (!s) {
+          let ancienne = null;
+          try { ancienne = JSON.parse(localStorage.getItem(ANCIENNE_CLE_SESSION) || "null"); } catch {}
+          if (ancienne?.refreshToken) {
+            const r = await supabase.auth.refreshSession({ refresh_token: ancienne.refreshToken });
+            s = r.data?.session || null;
+            if (s && ancienne.connectedAt && ancienne.userId === s.user.id) {
+              try { localStorage.setItem(CLE_OUVERTURE, JSON.stringify({ userId: s.user.id, debut: ancienne.connectedAt })); } catch {}
+            }
+          }
+          try { localStorage.removeItem(ANCIENNE_CLE_SESSION); } catch {}
         }
-        const profil = profilRows[0] || null;
-        if (!profil || profil.actif === false) throw new Error("session invalide");
-        const restored = {
-          accessToken, refreshToken, user: { id: saved.userId, email: saved.email },
-          profil, connectedAt: saved.connectedAt || Date.now(),
-        };
-        setSession(restored);
-        saveSessionStorage(restored); // conserve le jeton rafraîchi si besoin
-      } catch {
-        clearSessionStorage();
-      } finally {
-        setRestoring(false);
+        if (s) setSession(await ouvrirSession(s));
+        else if (SOUS_PORTAIL) { allerAuPortail(); return; }
+      } catch (e) {
+        await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+        if (SOUS_PORTAIL) { allerAuPortail(); return; }
+        setAuthError(e.message === "Profil introuvable." ? null : e.message);
       }
+      setRestoring(false);
     })();
+  }, [ouvrirSession]);
+
+  // Jeton renouvele (par cet onglet ou par un autre outil ouvert), ou
+  // deconnexion depuis un autre outil : on suit.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((evenement, s) => {
+      if (evenement === "TOKEN_REFRESHED" && s) {
+        setSession((prev) => (prev ? { ...prev, accessToken: s.access_token, refreshToken: s.refresh_token } : prev));
+      } else if (evenement === "SIGNED_OUT") {
+        effacerOuverture();
+        setSession(null);
+        if (SOUS_PORTAIL) allerAuPortail();
+      }
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
   async function handleLogin(login, password) {
@@ -621,17 +668,15 @@ export default function App() {
     try {
       const email = await rpc("email_from_login", SUPABASE_ANON_JWT, { p_login: login.trim() });
       if (!email) throw new Error("Identifiant inconnu.");
-      const data = await supaAuth("token?grant_type=password", { email, password });
-      const profilRows = await supaRest(`profils?select=*&id=eq.${data.user.id}`, { accessToken: data.access_token });
-      let profil = profilRows[0] || null;
-      if (profil && profil.actif === false) {
-        throw new Error("Ce compte a été désactivé. Contactez un administrateur.");
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw new Error(error.message === "Invalid login credentials" ? "Identifiant ou mot de passe incorrect." : error.message);
+      effacerOuverture();
+      try {
+        setSession(await ouvrirSession(data.session));
+      } catch (e) {
+        await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+        throw e;
       }
-      // connexion = statut "en pause" par défaut ; l'agent bascule lui-même en "en production"
-      try { profil = await rpc("set_my_status", data.access_token, { p_statut: "en_pause" }); } catch {}
-      const newSession = { accessToken: data.access_token, refreshToken: data.refresh_token, user: data.user, profil, connectedAt: Date.now() };
-      setSession(newSession);
-      saveSessionStorage(newSession);
     } catch (e) {
       setAuthError(e.message);
     } finally {
@@ -639,38 +684,17 @@ export default function App() {
     }
   }
 
-  // Rafraîchit le jeton d'accès en arrière-plan pendant une session active —
-  // jusqu'ici, seule la restauration au chargement de page (F5) rafraîchissait
-  // le jeton. Sans ça, un agent resté connecté en continu plus d'une heure
-  // (durée de vie typique d'un jeton Supabase) verrait ses appels échouer
-  // silencieusement jusqu'au prochain rechargement.
-  const refreshAccessToken = useCallback(async () => {
-    if (!session?.refreshToken) return;
-    try {
-      const refreshed = await supaAuth("token?grant_type=refresh_token", { refresh_token: session.refreshToken });
-      const updated = { ...session, accessToken: refreshed.access_token, refreshToken: refreshed.refresh_token };
-      setSession(updated);
-      saveSessionStorage(updated);
-    } catch {
-      // Échec du rafraîchissement (jeton révoqué, etc.) — les prochains
-      // appels API échoueront et l'agent sera renvoyé à l'écran de
-      // connexion via la gestion d'erreur déjà en place ailleurs.
-    }
-  }, [session]);
-
-  useEffect(() => {
-    if (!session) return;
-    const t = setInterval(refreshAccessToken, 45 * 60 * 1000); // toutes les 45 min, avant l'expiration (~60 min)
-    return () => clearInterval(t);
-  }, [session, refreshAccessToken]);
-
   async function handleLogout() {
     if (session) {
       try { await supaRest(`pause_details?agent_id=eq.${session.user.id}&fin=is.null`, { method: "PATCH", accessToken: session.accessToken, body: { fin: new Date().toISOString() } }); } catch {}
       try { await rpc("set_my_status", session.accessToken, { p_statut: "deconnecte" }); } catch {}
     }
-    clearSessionStorage();
+    effacerOuverture();
+    // Deconnexion unique : elle ferme aussi la session du portail et des
+    // autres outils ouverts a la meme adresse.
+    await supabase.auth.signOut().catch(() => {});
     setSession(null);
+    if (SOUS_PORTAIL) window.location.replace("/");
   }
 
   if (restoring) {
