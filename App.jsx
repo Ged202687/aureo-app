@@ -6307,7 +6307,7 @@ function ImportPanel({ accessToken, bump }) {
     try {
       const [c, l, g, a] = await Promise.all([
         supaRest("campagnes?select=*&actif=eq.true&order=created_at.desc", { accessToken }),
-        supaRest("lots?select=*&order=created_at.desc", { accessToken }),
+        supaRest("lots?select=*&supprime_le=is.null&order=created_at.desc", { accessToken }),
         supaRest("groupes_agents?select=*&order=nom.asc", { accessToken }),
         supaRest("profils?select=id,nom&role=in.(agent,coach)&order=nom.asc", { accessToken }),
       ]);
@@ -6724,7 +6724,9 @@ function CampaignsPanel({ accessToken, isSuperAdmin }) {
     try {
       const [c, l, lc, g, a, m] = await Promise.all([
         supaRest("campagnes?select=*&order=created_at.desc", { accessToken }),
-        supaRest("lots?select=*&order=created_at.desc", { accessToken }),
+        // Un lot supprime ne garde que ses fiches traitees, archivees : il
+        // reste lisible dans l'export et le tableau de bord, mais ne se gere plus.
+        supaRest("lots?select=*&supprime_le=is.null&order=created_at.desc", { accessToken }),
         supaRest("lots_cibles?select=*", { accessToken }),
         supaRest("groupes_agents?select=*&order=created_at.desc", { accessToken }),
         supaRest("profils?select=id,nom&role=in.(agent,coach)&order=nom.asc", { accessToken }),
@@ -6820,8 +6822,10 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
   async function deleteLot(lotId) {
     setDeletingLotId(lotId); setError(null); setDeleteInfo(null);
     try {
-      const nbSupprimees = await rpc("admin_delete_lot", accessToken, { p_lot_id: lotId });
-      setDeleteInfo({ nbSupprimees });
+      // Les fiches deja traitees ne sont pas effacees : elles restent,
+      // archivees, pour que l'export et les resultats ne changent pas apres coup.
+      const bilan = await rpc("admin_delete_lot", accessToken, { p_lot_id: lotId });
+      setDeleteInfo({ effacees: bilan?.fiches_effacees ?? 0, conservees: bilan?.fiches_conservees ?? 0 });
       setConfirmDeleteLotId(null);
       reload();
     } catch (e) { setError(e.message); } finally { setDeletingLotId(null); }
@@ -7155,7 +7159,8 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
             {error && <div className="mt-3"><ErrorBlock message={error} /></div>}
             {deleteInfo && (
               <div className="flex items-center gap-2 mt-3" style={{ background: C.greenSoft, color: C.green, borderRadius: 8, padding: "8px 12px", fontSize: 12 }}>
-                <CheckCircle2 size={13} /> Lot supprimé ({deleteInfo.nbSupprimees} fiche{deleteInfo.nbSupprimees !== 1 ? "s" : ""} effacée{deleteInfo.nbSupprimees !== 1 ? "s" : ""}).
+                <CheckCircle2 size={13} /> Lot supprimé : {deleteInfo.effacees} fiche{deleteInfo.effacees !== 1 ? "s" : ""} jamais traitée{deleteInfo.effacees !== 1 ? "s" : ""} effacée{deleteInfo.effacees !== 1 ? "s" : ""}
+                {deleteInfo.conservees > 0 && `, ${deleteInfo.conservees} fiche${deleteInfo.conservees !== 1 ? "s" : ""} déjà traitée${deleteInfo.conservees !== 1 ? "s" : ""} conservée${deleteInfo.conservees !== 1 ? "s" : ""} pour l'historique et l'export`}.
               </div>
             )}
 
@@ -7258,7 +7263,7 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                                   style={{ background: "none", border: "none", padding: 4 }}>
                                   <Plus size={13} color={C.mutedSoft} />
                                 </button>
-                                <button onClick={() => setConfirmDeleteLotId(l.id)} title="Supprimer ce lot et ses fiches"
+                                <button onClick={() => setConfirmDeleteLotId(l.id)} title="Supprimer ce lot (les fiches déjà traitées sont conservées)"
                                   style={{ background: "none", border: "none", padding: 4 }}>
                                   <Trash2 size={13} color={C.mutedSoft} />
                                 </button>
@@ -7364,7 +7369,7 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
                         {confirming && (
                           <div className="flex items-center justify-between mt-2" style={{ paddingTop: 8, borderTop: `1px dashed ${C.red}` }}>
                             <span style={{ fontSize: 11, color: C.red, fontWeight: 500 }}>
-                              Supprimer définitivement ce lot et ses {nbFiches ?? "?"} fiche(s) ?
+                              Supprimer ce lot ? Les fiches jamais traitées seront effacées ; celles déjà traitées sont conservées (archivées) pour l'historique et l'export.
                             </span>
                             <div className="flex items-center gap-2">
                               <button onClick={() => deleteLot(l.id)} disabled={deletingLotId === l.id}
@@ -7512,7 +7517,7 @@ function RecyclagePanel({ accessToken }) {
   useEffect(() => {
     setSelectedLotId(""); setResults(null); setSelectedIds(new Set()); setSuccessMsg(null);
     if (!selectedCampagneId) { setLots([]); return; }
-    supaRest(`lots?select=id,nom&campagne_id=eq.${selectedCampagneId}&order=nom.asc`, { accessToken }).then(setLots).catch((e) => setError(e.message));
+    supaRest(`lots?select=id,nom&campagne_id=eq.${selectedCampagneId}&supprime_le=is.null&order=nom.asc`, { accessToken }).then(setLots).catch((e) => setError(e.message));
   }, [selectedCampagneId, accessToken]);
 
   async function chercher() {
