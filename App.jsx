@@ -168,6 +168,41 @@ const C = {
 };
 const FONTS = "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
+// Etats d'interaction communs a toute l'application. Les composants sont
+// styles en ligne (style={{...}}), qui ne savent exprimer ni :hover ni
+// :focus-visible : ces etats vivent donc ici, une seule fois.
+//   - focus clavier : un anneau ambre visible, sur tout element atteignable
+//     au clavier. !important parce que plusieurs champs posent outline: none
+//     en ligne ; l'anneau n'apparait qu'au clavier, pas au clic ;
+//   - bouton survole : legerement assombri ; appuye : il s'enfonce a peine
+//     (retour tactile du clic) ; desactive : attenue et curseur interdit ;
+//   - ligne de tableau survolee : fond discret, pour suivre une ligne ;
+//   - menus : apparaissent en glissant de 4 px depuis leur declencheur, pour
+//     montrer d'ou ils viennent ;
+//   - prefers-reduced-motion : transitions et apparitions supprimees ; seul
+//     le spinner de chargement continue de tourner, c'est une information.
+const STYLES_INTERACTION = `
+  :where(button, a, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid ${C.amber} !important; outline-offset: 2px;
+  }
+  button { transition: transform .15s ease-out, filter .15s ease-out, opacity .15s ease-out; }
+  button:not(:disabled):hover { filter: brightness(.94); }
+  button:not(:disabled):active { transform: scale(.98); }
+  button:disabled { cursor: not-allowed; opacity: .55; }
+  .nav-item:not(.nav-actif):hover { background: ${C.inkFaint} !important; color: #DDE1E7 !important; filter: none; }
+  main table tbody tr { transition: background-color .15s ease-out; }
+  main table tbody tr:hover { background-color: ${C.canvas}; }
+  @keyframes apparait-bas { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  @keyframes apparait-haut { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .apparait-bas { animation: apparait-bas .16s ease-out; }
+  .apparait-haut { animation: apparait-haut .16s ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    .animate-spin { animation: spin 1s linear infinite !important; }
+    button:not(:disabled):active { transform: none; }
+  }
+`;
+
 /* Mark carré (soleil XGS) pour les petits formats — sidebar, favicon-like usage */
 function LogoMark({ size = 26 }) {
   return (
@@ -688,7 +723,7 @@ function LoginScreen({ onLogin, loading, error }) {
       background: `radial-gradient(circle at 18% 20%, #263070 0%, #000B53 45%, #00051F 100%)`,
       position: "relative", overflow: "hidden",
     }}>
-      <style>{`@import url('${FONTS}'); .disp{font-family:'Space Grotesk',sans-serif;} * { box-sizing: border-box; } button{cursor:pointer;font-family:inherit;} input{font-family:inherit;}`}</style>
+      <style>{`@import url('${FONTS}'); .disp{font-family:'Space Grotesk',sans-serif;} * { box-sizing: border-box; } button{cursor:pointer;font-family:inherit;} input{font-family:inherit;} @keyframes spin { to { transform: rotate(360deg); } } ${STYLES_INTERACTION}`}</style>
 
       {/* halo décoratif — teintes reprises du logo (jaune soleil + bleu nuit) */}
       <div style={{ position: "absolute", width: 520, height: 520, borderRadius: "50%", background: "#FDCF4F", opacity: 0.10, filter: "blur(90px)", top: -160, right: -140 }} />
@@ -775,7 +810,7 @@ function ForcePasswordChange({ session, onDone, onLogout }) {
       background: `radial-gradient(circle at 18% 20%, #263070 0%, #000B53 45%, #00051F 100%)`,
       position: "relative", overflow: "hidden",
     }}>
-      <style>{`@import url('${FONTS}'); .disp{font-family:'Space Grotesk',sans-serif;} * { box-sizing: border-box; } button{cursor:pointer;font-family:inherit;} input{font-family:inherit;}`}</style>
+      <style>{`@import url('${FONTS}'); .disp{font-family:'Space Grotesk',sans-serif;} * { box-sizing: border-box; } button{cursor:pointer;font-family:inherit;} input{font-family:inherit;} @keyframes spin { to { transform: rotate(360deg); } } ${STYLES_INTERACTION}`}</style>
       <div style={{ position: "absolute", width: 420, height: 420, borderRadius: "50%", background: "#FDCF4F", opacity: 0.10, filter: "blur(90px)", top: -160, right: -140 }} />
 
       <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 24, zIndex: 1 }}>
@@ -1067,6 +1102,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
         .disp { font-family: 'Space Grotesk', sans-serif; } .mono { font-family: 'IBM Plex Mono', monospace; }
         * { box-sizing: border-box; } button { font-family: inherit; cursor: pointer; } input, textarea { font-family: inherit; }
         @keyframes spin { to { transform: rotate(360deg); } } .animate-spin { animation: spin 1s linear infinite; }
+        ${STYLES_INTERACTION}
       `}</style>
 
       <div className="flex" style={{ minHeight: "100vh" }}>
@@ -1137,7 +1173,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               </div>
 
               {showPauseMenu && (
-                <div style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 5, boxShadow: "0 12px 30px rgba(0,0,0,0.3)", zIndex: 30 }}>
+                <div className="apparait-haut" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 5, boxShadow: "0 12px 30px rgba(0,0,0,0.3)", zIndex: 30 }}>
                   {pauseTypes.length === 0 ? (
                     <div style={{ padding: "8px 9px", fontSize: 11.5, color: C.mutedSoft }}>Aucun type de pause configuré.</div>
                   ) : pauseTypes.map((pt) => (
@@ -1201,6 +1237,21 @@ function CenterLoader() {
     </div>
   );
 }
+// Etat vide : une icone, ce qui se passe, et au besoin ce qu'on peut faire.
+// Jamais une phrase brute perdue en haut a gauche d'un ecran vide. compact :
+// a l'interieur d'une carte ou d'un tableau deja encadre.
+function EtatVide({ icon: Icon = Inbox, titre, detail, compact }) {
+  return (
+    <div className="flex flex-col items-center" style={{ textAlign: "center", padding: compact ? "16px" : "40px 24px", background: compact ? "transparent" : C.surface, border: compact ? "none" : `1px dashed ${C.border}`, borderRadius: 12 }}>
+      <div className="flex items-center justify-center" style={{ width: compact ? 28 : 40, height: compact ? 28 : 40, borderRadius: 999, background: C.canvas, marginBottom: 8 }}>
+        <Icon size={compact ? 14 : 16} color={C.mutedSoft} />
+      </div>
+      <div style={{ fontSize: compact ? 12.5 : 13.5, fontWeight: 600, color: C.text }}>{titre}</div>
+      {detail && <div style={{ fontSize: 12, color: C.muted, marginTop: 4, maxWidth: 420 }}>{detail}</div>}
+    </div>
+  );
+}
+
 function ErrorBlock({ message }) {
   return (
     <div className="flex items-center gap-2" style={{ background: C.redSoft, color: C.red, borderRadius: 9, padding: "12px 16px", fontSize: 13, maxWidth: 520 }}>
@@ -1211,7 +1262,8 @@ function ErrorBlock({ message }) {
 
 function NavItem({ icon: Icon, label, active, onClick, pastille }) {
   return (
-    <button onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, border: "none", background: active ? C.inkSoft : "transparent", color: active ? "#fff" : "#9AA1B0", fontSize: 13, fontWeight: 500, textAlign: "left" }}>
+    <button onClick={onClick} className={active ? "nav-item nav-actif" : "nav-item"} aria-current={active ? "page" : undefined}
+      style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, border: "none", background: active ? C.inkSoft : "transparent", color: active ? "#fff" : "#9AA1B0", fontSize: 13, fontWeight: 500, textAlign: "left" }}>
       <Icon size={16} strokeWidth={2} />
       <span style={{ flex: 1 }}>{label}</span>
       {pastille > 0 && (
@@ -1913,7 +1965,7 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger, nbRappelsPoste }) 
             ) : rappels === null ? (
               <CenterLoader />
             ) : rappels.length === 0 ? (
-              <p style={{ fontSize: 12, color: C.mutedSoft }}>Aucun rappel programmé cette semaine.</p>
+              <EtatVide compact icon={BellRing} titre="Aucun rappel programmé cette semaine." detail="Les rappels que vous planifiez en qualifiant une fiche apparaîtront ici." />
             ) : (
               <div className="flex flex-col gap-2.5">
                 {rappels.map((r) => (
@@ -1943,7 +1995,7 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger, nbRappelsPoste }) 
             {traitees === null ? (
               <div style={{ padding: 16 }}><CenterLoader /></div>
             ) : traitees.length === 0 ? (
-              <p style={{ fontSize: 12, color: C.mutedSoft, padding: 16 }}>Aucune fiche traitée pour l'instant aujourd'hui.</p>
+              <EtatVide compact icon={CheckCircle2} titre="Aucune fiche traitée pour l'instant aujourd'hui." />
             ) : (
               traitees.map((t, i) => (
                 <div key={i} style={{ padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.borderSoft}` : "none" }}>
@@ -2103,7 +2155,7 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduct
             </div>
           )}
           {results.length === 0 ? (
-            verrouillees.length === 0 && <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
+            verrouillees.length === 0 && <EtatVide icon={Search} titre="Aucune fiche ne correspond à cette recherche." detail="Vérifiez le numéro de box, le nom ou le téléphone saisi." />
           ) : (
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -2498,7 +2550,7 @@ function SearchPanel({ accessToken, tree, isAdmin }) {
 
       {results && (
         results.length === 0 ? (
-          <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à cette recherche.</p>
+          <EtatVide icon={Search} titre="Aucune fiche ne correspond à cette recherche." detail="Vérifiez le numéro de box, le nom ou le téléphone saisi." />
         ) : (
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -2563,7 +2615,7 @@ function SearchPanel({ accessToken, tree, isAdmin }) {
                           {derniereQualif === undefined ? (
                             <CenterLoader />
                           ) : derniereQualif === null ? (
-                            <p style={{ fontSize: 12.5, color: C.mutedSoft }}>Aucune qualification enregistrée pour cette fiche.</p>
+                            <EtatVide compact icon={History} titre="Aucune qualification enregistrée pour cette fiche." detail="Elle n'a encore jamais été traitée." />
                           ) : (
                             <div className="flex items-center justify-between">
                               <div>
@@ -2705,7 +2757,7 @@ function LiveStatusPanel({ accessToken, callerRole }) {
         <span style={{ fontSize: 10.5, color: C.mutedSoft }}>Actualisé toutes les minutes</span>
       </div>
       {rows.length === 0 ? (
-        <p style={{ fontSize: 12.5, color: C.muted }}>Aucune personne dans votre périmètre.</p>
+        <EtatVide compact icon={Users} titre="Aucune personne dans votre périmètre." />
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8 }}>
           {rows.map((p) => {
@@ -2729,7 +2781,7 @@ function LiveStatusPanel({ accessToken, callerRole }) {
                   {peutControler && <ChevronDown size={12} color={C.mutedSoft} style={{ flexShrink: 0 }} />}
                 </div>
                 {menuOuvert && (
-                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", zIndex: 20, overflow: "hidden" }}>
+                  <div className="apparait-bas" style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", zIndex: 20, overflow: "hidden" }}>
                     <button onClick={() => forcerStatut(p.id, "en_prod")}
                       className="flex items-center gap-2" style={{ width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 12, textAlign: "left" }}>
                       <PlayCircle size={12} color={C.green} /> Production
@@ -3073,9 +3125,9 @@ function SupervisionPanel({ accessToken, callerRole }) {
           </div>
 
           {filtrees.length === 0 ? (
-            <p style={{ fontSize: 13, color: C.muted }}>
-              {agents.length === 0 ? "Aucun agent dans votre périmètre." : "Aucun agent ne correspond à ces critères."}
-            </p>
+            <EtatVide icon={Users}
+              titre={agents.length === 0 ? "Aucun agent dans votre périmètre." : "Aucun agent ne correspond à ces critères."}
+              detail={agents.length === 0 ? "Les agents apparaissent ici dès qu'ils sont rattachés à vos équipes." : "Changez d'équipe, videz la recherche ou décochez « Alertes seulement »."} />
           ) : vue === "mur" ? (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 10 }}>
@@ -3499,7 +3551,7 @@ function QcAEvaluer({ accessToken, grille, lienModele }) {
       {!grille && <div className="mb-4"><ErrorBlock message="Aucune grille active : un administrateur doit en publier une." /></div>}
 
       {agents.length === 0 ? (
-        <p style={{ fontSize: 13, color: C.muted }}>Aucun agent dans votre équipe.</p>
+        <EtatVide icon={Users} titre="Aucun agent dans votre équipe." detail="Les agents rattachés à votre équipe apparaîtront ici avec leurs appels à évaluer." />
       ) : (
         <div className="flex flex-col" style={{ gap: 12 }}>
           {agents.map((ag) => {
@@ -3524,7 +3576,7 @@ function QcAEvaluer({ accessToken, grille, lienModele }) {
                   </div>
                 </div>
                 {appels.length === 0 ? (
-                  <p style={{ fontSize: 12, color: C.mutedSoft, padding: "10px 16px" }}>Aucun appel à évaluer sur la période.</p>
+                  <EtatVide compact icon={Phone} titre="Aucun appel à évaluer sur la période." detail="Élargissez la période en haut de page." />
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                     <tbody>
@@ -3851,9 +3903,9 @@ function QcListe({ accessToken, role, moiId, grillesParId, lienModele, onCompteu
       )}
 
       {selection.length === 0 ? (
-        <p style={{ fontSize: 13, color: C.muted }}>
-          {contestationsSeules ? "Aucune contestation en attente." : estAgent ? "Aucune évaluation sur la période." : "Aucune évaluation sur la période."}
-        </p>
+        <EtatVide icon={ClipboardCheck}
+          titre={contestationsSeules ? "Aucune contestation en attente." : "Aucune évaluation sur la période."}
+          detail={contestationsSeules ? "Les contestations des agents de votre périmètre arriveront ici." : estAgent ? "Les évaluations de vos appels par votre coach apparaîtront ici." : "Élargissez la période, ou commencez par l'onglet « À évaluer »."} />
       ) : (
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -4617,7 +4669,7 @@ function MesResultatsPanel({ accessToken, montrerDetailParAgent }) {
               {parAgent === null ? (
                 <div style={{ padding: 20 }}><CenterLoader /></div>
               ) : parAgent.length === 0 ? (
-                <p style={{ fontSize: 12.5, color: C.muted, padding: "16px 20px" }}>Aucun agent dans votre périmètre.</p>
+                <EtatVide compact icon={Users} titre="Aucun agent dans votre périmètre." />
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   <thead>
@@ -4889,7 +4941,7 @@ function ProgressionParLot({ rows, periode }) {
           {!campagnes ? (
             <div style={{ padding: 18 }}><CenterLoader /></div>
           ) : campagnes.length === 0 ? (
-            <p style={{ fontSize: 12.5, color: C.muted, padding: 18 }}>Aucun lot pour le moment.</p>
+            <EtatVide compact icon={Megaphone} titre="Aucun lot pour le moment." detail="L'avancement s'affichera dès qu'un lot aura été importé." />
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
@@ -5175,7 +5227,7 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
           <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Rappels non traités par agent</h2>
         </div>
         {!parAgent || parAgent.length === 0 ? (
-          <p style={{ fontSize: 12.5, color: C.muted }}>Aucun rappel en attente.</p>
+          <EtatVide icon={BellRing} titre="Aucun rappel en attente." detail="Les rappels posés par les agents apparaîtront ici, par agent." />
         ) : (
           <div className="flex flex-col gap-2">
             {parAgent.map((a) => (
@@ -5392,7 +5444,7 @@ function PresencePanel({ accessToken }) {
           </div>
 
           {rows.length === 0 ? (
-            <p style={{ fontSize: 13, color: C.muted }}>Aucune personne dans votre périmètre pour le moment.</p>
+            <EtatVide icon={Timer} titre="Aucune personne dans votre périmètre pour le moment." detail="Les temps de production et de pause s'afficheront dès qu'une personne sera rattachée à vos équipes." />
           ) : (
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -6125,9 +6177,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
             ) : recherche.trim().length === 1 ? (
               <p style={{ fontSize: 11.5, color: C.mutedSoft, padding: "6px 10px" }}>Encore une lettre…</p>
             ) : conversations.length === 0 ? (
-              <p style={{ fontSize: 11.5, color: C.mutedSoft, padding: "6px 10px", lineHeight: 1.45 }}>
-                Aucune conversation. Cherchez un collègue par son nom pour lui écrire.
-              </p>
+              <EtatVide compact icon={MessageSquare} titre="Aucune conversation." detail="Cherchez un collègue par son nom pour lui écrire." />
             ) : (
               conversations.map((p) => (
                 <Entree key={p.id} actif={canal.type === "direct" && canal.id === p.id} onClick={() => setCanal({ type: "direct", id: p.id })}
@@ -6149,7 +6199,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
             {messages === null ? (
               <CenterLoader />
             ) : messages.length === 0 ? (
-              <p style={{ fontSize: 12.5, color: C.mutedSoft }}>Aucun message pour l'instant. Lancez la conversation.</p>
+              <EtatVide compact icon={MessageSquare} titre="Aucun message pour l'instant." detail="Écrivez le premier message ci-dessous." />
             ) : (
               <div className="flex flex-col gap-3">
                 {messages.map((m, i) => {
@@ -6266,7 +6316,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
                 <Smile size={17} color={emojisOuverts ? C.ink : C.mutedSoft} />
               </button>
               {emojisOuverts && (
-                <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 268, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, boxShadow: "0 10px 30px rgba(15,23,42,0.13)", zIndex: 20 }}>
+                <div className="apparait-haut" style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 268, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, boxShadow: "0 10px 30px rgba(15,23,42,0.13)", zIndex: 20 }}>
                   {EMOJIS.map((g) => (
                     <div key={g.groupe} style={{ marginBottom: 6 }}>
                       <div style={{ fontSize: 9.5, color: C.mutedSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 }}>{g.groupe}</div>
@@ -7126,7 +7176,7 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
         {error && <div className="mb-3"><ErrorBlock message={error} /></div>}
 
         <div className="flex flex-col gap-2">
-          {campagnes.length === 0 && <p style={{ fontSize: 12.5, color: C.muted }}>Aucune campagne créée.</p>}
+          {campagnes.length === 0 && <EtatVide compact icon={Megaphone} titre="Aucune campagne créée." detail="Créez-en une avec « Nouvelle campagne »." />}
           {campagnes.map((c) => {
             const nbLots = lots.filter((l) => l.campagne_id === c.id).length;
             const isActive = selected === c.id;
@@ -7305,7 +7355,7 @@ function CampagnesTab({ accessToken, campagnes, lots, lotsCibles, groupes, agent
               )}
 
               {lotsCourants.length === 0 ? (
-                <p style={{ fontSize: 12.5, color: C.mutedSoft }}>Aucun lot pour le moment.</p>
+                <EtatVide compact icon={Upload} titre="Aucun lot pour le moment." detail="Importez un fichier dans cette campagne depuis l'onglet Import, ou créez un lot vide." />
               ) : (
                 <div className="flex flex-col gap-2">
                   {lotsCourants.map((l) => {
@@ -7546,7 +7596,7 @@ function GroupesTab({ accessToken, groupes, agents, membres, selected, setSelect
         {error && <div className="mb-3"><ErrorBlock message={error} /></div>}
 
         <div className="flex flex-col gap-2">
-          {groupes.length === 0 && <p style={{ fontSize: 12.5, color: C.muted }}>Aucun groupe créé.</p>}
+          {groupes.length === 0 && <EtatVide compact icon={UsersRound} titre="Aucun groupe créé." detail="Un groupe permet de cibler plusieurs agents d'un coup." />}
           {groupes.map((g) => {
             const nbMembres = membres.filter((m) => m.groupe_id === g.id).length;
             const isActive = selected === g.id;
@@ -7575,7 +7625,7 @@ function GroupesTab({ accessToken, groupes, agents, membres, selected, setSelect
 
             <div className="flex flex-wrap gap-2" style={{ marginTop: 16 }}>
               {agents.length === 0 ? (
-                <p style={{ fontSize: 12, color: C.mutedSoft }}>Aucun agent enregistré.</p>
+                <EtatVide compact icon={Users} titre="Aucun agent enregistré." />
               ) : agents.map((ag) => {
                 const isMember = membres.some((m) => m.groupe_id === current.id && m.agent_id === ag.id);
                 return (
@@ -7716,7 +7766,7 @@ function RecyclagePanel({ accessToken }) {
 
       {results && (
         results.length === 0 ? (
-          <p style={{ fontSize: 13, color: C.muted }}>Aucune fiche ne correspond à ces critères.</p>
+          <EtatVide icon={RefreshCw} titre="Aucune fiche ne correspond à ces critères." detail="Changez de lot, ou cochez d'autres statuts." />
         ) : (
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
             <div className="flex items-center justify-between" style={{ padding: "10px 16px", borderBottom: `1px solid ${C.borderSoft}` }}>
@@ -7870,7 +7920,7 @@ function EquipesPanel({ accessToken }) {
           )}
 
           <div className="flex flex-col gap-2">
-            {equipes.length === 0 && <p style={{ fontSize: 12.5, color: C.muted }}>Aucune équipe créée.</p>}
+            {equipes.length === 0 && <EtatVide compact icon={UsersRound} titre="Aucune équipe créée." />}
             {equipes.map((eq) => {
               const nbAgents = agents.filter((a) => a.equipe_id === eq.id).length;
               const coachNom = coachs.find((c) => c.id === eq.coach_id)?.nom;
@@ -7950,7 +8000,7 @@ function EquipesPanel({ accessToken }) {
                   <Users size={13} /> Agents de l'équipe ({agentsDeLequipe.length})
                 </div>
                 {agentsDeLequipe.length === 0 ? (
-                  <p style={{ fontSize: 12.5, color: C.mutedSoft, marginBottom: 10 }}>Aucun agent dans cette équipe pour le moment.</p>
+                  <div style={{ marginBottom: 8 }}><EtatVide compact icon={Users} titre="Aucun agent dans cette équipe pour le moment." /></div>
                 ) : (
                   <div className="flex flex-wrap gap-2 mb-3">
                     {agentsDeLequipe.map((a) => (
@@ -8247,7 +8297,7 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
             </thead>
             <tbody>
               {comptesFiltres.length === 0 ? (
-                <tr><td colSpan={6} style={{ padding: "20px 16px", textAlign: "center", color: C.mutedSoft, fontSize: 12.5 }}>Aucun compte pour ce rôle.</td></tr>
+                <tr><td colSpan={6}><EtatVide compact icon={UserCircle2} titre="Aucun compte pour ce rôle." /></td></tr>
               ) : comptesFiltres.map((c) => (
                 <tr key={c.id} style={{ borderTop: `1px solid ${C.borderSoft}`, opacity: c.actif === false ? 0.55 : 1 }}>
                   <td className="mono" style={{ padding: "10px 16px", color: C.mutedSoft }}>{c.matricule}</td>
