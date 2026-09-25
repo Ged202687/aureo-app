@@ -833,6 +833,37 @@ function useElapsed(since) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
+// Rafraichissement periodique qui s'arrete quand l'onglet n'est pas visible.
+// Supabase journalise chaque requete, et le volume de journaux avait atteint
+// cinq fois le quota : un onglet laisse ouvert en arriere-plan toute la
+// journee (l'agent travaille dans son outil d'appel) interrogeait la base
+// pour rien. intervalleMasque : cadence gardee onglet cache (null : aucune).
+// Au retour sur l'onglet, on relit tout de suite si la derniere lecture date
+// de plus d'un intervalle ; sinon on attend le prochain tour, pour qu'un
+// agent qui passe d'une fenetre a l'autre a chaque appel ne declenche pas une
+// lecture a chaque fois.
+function usePeriodique(fn, intervalle, { intervalleMasque = null, immediat = true } = {}) {
+  useEffect(() => {
+    if (!fn) return undefined;
+    let t = null;
+    let derniere = 0;
+    const lancer = () => { derniere = Date.now(); fn(); };
+    const planifier = () => {
+      clearInterval(t);
+      const d = document.hidden ? intervalleMasque : intervalle;
+      t = d ? setInterval(lancer, d) : null;
+    };
+    const auChangement = () => {
+      if (!document.hidden && Date.now() - derniere >= intervalle) lancer();
+      planifier();
+    };
+    if (immediat) lancer(); else derniere = Date.now();
+    planifier();
+    document.addEventListener("visibilitychange", auChangement);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", auChangement); };
+  }, [fn, intervalle, intervalleMasque, immediat]);
+}
+
 const ROLE_DEFAULT_TABS = {
   super_admin: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
   admin: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
@@ -891,29 +922,57 @@ function Workspace({ session, onLogout, onProfilChange }) {
   // Un total par conversation, agrege en base : le compter cote navigateur
   // obligerait a rapatrier les messages pour n'en garder qu'un nombre.
   const [nonLusParCanal, setNonLusParCanal] = useState({});
-  const compterNonLus = useCallback(async () => {
+
+  // Pastille de l'onglet Qualite : evaluations a valider ou contester, et
+  // decisions rendues pas encore vues (agent) ; contestations a trancher
+  // (superviseur, admin).
+  const [qcCompteurs, setQcCompteurs] = useState({ a_traiter: 0, decisions: 0, non_lues: 0, contestations: 0 });
+
+  // Fiches en cours non qualifiees et nombre de rappels de la semaine, pour le
+  // poste de travail. null tant que le premier appel n'a pas repondu : le
+  // poste lit alors lui-meme, comme avant.
+  const [etatPoste, setEtatPoste] = useState(null);
+
+  // Un seul appel pour les quatre compteurs du poste (messages non lus,
+  // qualite, fiches en cours, rappels) au lieu de quatre appels separes.
+  // 30 s onglet visible ; 60 s onglet cache, et non zero : c'est justement
+  // quand l'agent est dans une autre fenetre que le carillon d'un nouveau
+  // message sert.
+  const chargerEtatPoste = useCallback(async () => {
     try {
-      const lignes = await rpc("non_lus_par_canal", accessToken, {});
+      const e = await rpc("etat_poste", accessToken, {});
+      if (!e) return;
       const parCanal = {};
       let total = 0;
-      for (const l of lignes || []) { parCanal[l.canal] = Number(l.total); total += Number(l.total); }
+      for (const l of e.non_lus || []) { parCanal[l.canal] = Number(l.total); total += Number(l.total); }
       setNonLusParCanal(parCanal);
       setNonLus(total);
       if (nonLusPrecedentRef.current !== null && total > nonLusPrecedentRef.current && sonActifRef.current) jouerCarillon();
       nonLusPrecedentRef.current = total;
-    } catch {}
+      if (e.qc) setQcCompteurs(e.qc);
+      setEtatPoste({ orphelines: e.orphelines || [], nbRappels: e.nb_rappels ?? null });
+    } catch {
+      // etat_poste absent (script SQL pas encore passe) : les pastilles
+      // restent justes avec les appels separes. Le poste lit alors lui-meme
+      // ses fiches en cours et ses rappels (etatPoste reste null).
+      try {
+        const lignes = await rpc("non_lus_par_canal", accessToken, {});
+        const parCanal = {};
+        let total = 0;
+        for (const l of lignes || []) { parCanal[l.canal] = Number(l.total); total += Number(l.total); }
+        setNonLusParCanal(parCanal);
+        setNonLus(total);
+        if (nonLusPrecedentRef.current !== null && total > nonLusPrecedentRef.current && sonActifRef.current) jouerCarillon();
+        nonLusPrecedentRef.current = total;
+      } catch {}
+      try { const r = await rpc("qc_compteurs", accessToken, {}); if (r) setQcCompteurs(r); } catch {}
+    }
   }, [accessToken]);
-  useEffect(() => { compterNonLus(); const t = setInterval(compterNonLus, 30000); return () => clearInterval(t); }, [compterNonLus]);
-
-  // Pastille de l'onglet Qualite : evaluations a valider ou contester, et
-  // decisions rendues pas encore vues (agent) ; contestations
-  // a trancher (superviseur, admin). Toutes les 2 minutes suffisent, rien
-  // n'y est urgent a la seconde.
-  const [qcCompteurs, setQcCompteurs] = useState({ a_traiter: 0, decisions: 0, non_lues: 0, contestations: 0 });
-  const chargerQcCompteurs = useCallback(async () => {
-    try { const r = await rpc("qc_compteurs", accessToken, {}); if (r) setQcCompteurs(r); } catch {}
-  }, [accessToken]);
-  useEffect(() => { chargerQcCompteurs(); const t = setInterval(chargerQcCompteurs, 120000); return () => clearInterval(t); }, [chargerQcCompteurs]);
+  usePeriodique(chargerEtatPoste, 30000, { intervalleMasque: 60000 });
+  // Noms historiques, toujours passes aux ecrans qui demandent un recomptage
+  // (messagerie apres lecture, qualite apres une action).
+  const compterNonLus = chargerEtatPoste;
+  const chargerQcCompteurs = chargerEtatPoste;
   const elapsed = useElapsed(connectedAt);
   const [statutBusy, setStatutBusy] = useState(false);
   const [pauseTypes, setPauseTypes] = useState([]);
@@ -1110,7 +1169,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
             <ErrorBlock message={treeError} />
           ) : (
             <>
-              {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} matricule={profil?.matricule} />}
+              {adminTab === "poste" && effectiveTabs.has("poste") && <AgentView accessToken={accessToken} tree={tree} refreshFlag={refreshFlag} bump={bump} agentId={session.user.id} statut={profil?.statut} pauseTypeId={currentPauseTypeId} presenceBump={presenceBump} matricule={profil?.matricule} etatPoste={etatPoste} rafraichirEtatPoste={chargerEtatPoste} />}
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "supervision" && effectiveTabs.has("supervision") && <SupervisionPanel accessToken={accessToken} callerRole={profil?.role} />}
               {adminTab === "qualite" && effectiveTabs.has("qualite") && <QualitePanel accessToken={accessToken} role={role === "agent" ? "agent" : profil?.role} moiId={session.user.id} onCompteurs={chargerQcCompteurs} compteurs={qcCompteurs} />}
@@ -1166,7 +1225,7 @@ function NavItem({ icon: Icon, label, active, onClick, pastille }) {
 
 /* ---------------------------------- vue agent ---------------------------------- */
 
-function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, presenceBump, matricule }) {
+function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, presenceBump, matricule, etatPoste, rafraichirEtatPoste }) {
   const [view, setView] = useState("poste"); // poste | recherche
   // Modele du lien d'appel Axterix. Vide tant que l'outil n'est pas branche :
   // le bouton reste alors visible mais inactif.
@@ -1188,7 +1247,10 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
   })();
   const [cat, setCat] = useState(null);
   const [sub, setSub] = useState(null);
-  const [orphelines, setOrphelines] = useState([]);
+  const [orphelinesLocales, setOrphelines] = useState([]);
+  // Fournies par le poste (etat_poste, un seul appel pour tout l'ecran). A
+  // defaut, le poste les lit lui-meme.
+  const orphelines = etatPoste ? etatPoste.orphelines : orphelinesLocales;
   const [sidebarBump, setSidebarBump] = useState(0);
   const [showOrphelines, setShowOrphelines] = useState(false);
   const [rappelDate, setRappelDate] = useState("");
@@ -1243,11 +1305,12 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     } catch {}
   }, [accessToken, agentId]);
 
-  useEffect(() => {
-    loadMyPresence();
-    const t = setInterval(loadMyPresence, 30000);
-    return () => clearInterval(t);
-  }, [loadMyPresence, presenceBump]);
+  // Le compteur de production avance deja seul a l'ecran, seconde par
+  // seconde, a partir de la derniere lecture : relire toutes les 3 minutes
+  // suffit a corriger la derive. Un changement de statut relit tout de suite
+  // (presenceBump).
+  usePeriodique(loadMyPresence, 180000);
+  useEffect(() => { if (presenceBump) loadMyPresence(); }, [presenceBump]); // eslint-disable-line
 
   const loadStats = useCallback(async () => {
     try {
@@ -1280,7 +1343,12 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
     } catch {}
   }, [accessToken, agentId]);
 
-  useEffect(() => { loadOrphelines(); const t = setInterval(loadOrphelines, 30000); return () => clearInterval(t); }, [loadOrphelines]);
+  usePeriodique(etatPoste ? null : loadOrphelines, 30000);
+  // Relecture immediate apres une action (prise, qualification) : par l'appel
+  // commun s'il est disponible, sinon par la lecture locale.
+  const relireOrphelines = useCallback(() => {
+    if (etatPoste && rafraichirEtatPoste) rafraichirEtatPoste(); else loadOrphelines();
+  }, [etatPoste, rafraichirEtatPoste, loadOrphelines]);
 
   const [showCreateClient, setShowCreateClient] = useState(false);
 
@@ -1305,7 +1373,7 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       } catch {}
       loadCampagneInfo(f.lot_id);
     }
-    loadOrphelines();
+    relireOrphelines();
   }
 
   async function pullNext() {
@@ -1348,8 +1416,8 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
       setRappelDate(""); setRappelHeure(""); setDateValidation("");
       bump();
       loadStats();
-      loadOrphelines();
-      setTimeout(loadOrphelines, 1500);
+      relireOrphelines();
+      setTimeout(relireOrphelines, 1500);
       setSidebarBump((n) => n + 1);
     } catch (e) { setError(e.message); } finally { setSubmitting(false); }
   }
@@ -1715,14 +1783,14 @@ function AgentView({ accessToken, tree, bump, agentId, statut, pauseTypeId, pres
         </>
       )}
       </div>
-      <AgentSidebar accessToken={accessToken} agentId={agentId} refreshTrigger={sidebarBump} />
+      <AgentSidebar accessToken={accessToken} agentId={agentId} refreshTrigger={sidebarBump} nbRappelsPoste={etatPoste?.nbRappels} />
       </div>
       )}
     </div>
   );
 }
 
-function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
+function AgentSidebar({ accessToken, agentId, refreshTrigger, nbRappelsPoste }) {
   const [rappels, setRappels] = useState(null);
   const [nbRappels, setNbRappels] = useState(null);
   const [error, setError] = useState(null);
@@ -1772,11 +1840,15 @@ function AgentSidebar({ accessToken, agentId, refreshTrigger }) {
   // Une minute au lieu de trente secondes : un rappel se declenche a l'heure
   // pres, pas a la demi-minute, et une qualification rafraichit deja tout de
   // suite via refreshTrigger.
+  // Liste fermee : le nombre vient de l'appel commun du poste (etat_poste),
+  // sans requete ici. A defaut, on le compte soi-meme.
   const rafraichirRappels = useCallback(async () => {
-    if (showRappels) await loadRappels(); else await loadNbRappels();
-  }, [showRappels, loadRappels, loadNbRappels]);
+    if (showRappels) await loadRappels();
+    else if (nbRappelsPoste === undefined || nbRappelsPoste === null) await loadNbRappels();
+  }, [showRappels, loadRappels, loadNbRappels, nbRappelsPoste]);
 
-  useEffect(() => { rafraichirRappels(); const t = setInterval(rafraichirRappels, 60000); return () => clearInterval(t); }, [rafraichirRappels]);
+  usePeriodique(rafraichirRappels, 60000);
+  useEffect(() => { if (!showRappels && nbRappelsPoste !== undefined && nbRappelsPoste !== null) setNbRappels(nbRappelsPoste); }, [nbRappelsPoste, showRappels]);
   // Rafraîchissement immédiat dès qu'une qualification vient d'être validée
   // (sans attendre le prochain cycle de 30s) — évite qu'un rappel tout juste
   // traité reste visible dans la liste pendant jusqu'à 30 secondes.
@@ -2610,7 +2682,7 @@ function LiveStatusPanel({ accessToken, callerRole }) {
     } catch (e) { setError(e.message); }
   }, [accessToken]);
 
-  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+  usePeriodique(load, 60000);
 
   async function forcerStatut(agentId, statut, pauseTypeId = null) {
     setBusyId(agentId); setOpenMenuId(null);
@@ -2630,7 +2702,7 @@ function LiveStatusPanel({ accessToken, callerRole }) {
           <CircleDot size={14} color={C.green} />
           <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Statut en direct</h2>
         </div>
-        <span style={{ fontSize: 10.5, color: C.mutedSoft }}>Actualisé toutes les 30 secondes</span>
+        <span style={{ fontSize: 10.5, color: C.mutedSoft }}>Actualisé toutes les minutes</span>
       </div>
       {rows.length === 0 ? (
         <p style={{ fontSize: 12.5, color: C.muted }}>Aucune personne dans votre périmètre.</p>
@@ -4320,7 +4392,7 @@ function FichesBloqueesEquipe({ accessToken }) {
     } catch (e) { setError(e.message); }
   }, [accessToken]);
 
-  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+  usePeriodique(load, 60000);
 
   async function liberer(clientId) {
     setLiberationEnCours(clientId); setError(null);
@@ -4979,7 +5051,7 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
   }, [accessToken, periode]);
 
   useEffect(() => { loadParLot(); }, [loadParLot, refreshFlag]);
-  useEffect(() => { const t = setInterval(loadParLot, 30000); return () => clearInterval(t); }, [loadParLot]);
+  usePeriodique(loadParLot, 60000, { immediat: false });
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -5008,7 +5080,7 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
   }, [accessToken, periode]);
 
   useEffect(() => { loadDashboard(); }, [loadDashboard, refreshFlag]);
-  useEffect(() => { const t = setInterval(loadDashboard, 30000); return () => clearInterval(t); }, [loadDashboard]);
+  usePeriodique(loadDashboard, 60000, { immediat: false });
 
   if (error) return <ErrorBlock message={error} />;
   if (!counts) return <CenterLoader />;
@@ -5029,7 +5101,7 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
       <header className="mb-5 flex items-end justify-between">
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Tableau de bord</h1>
-          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Données en direct depuis Supabase — actualisées toutes les 30 secondes.</p>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Données en direct depuis Supabase — actualisées toutes les minutes, tant que la page est affichée.</p>
         </div>
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 4 }} className="flex gap-1">
           {[{ id: "jour", label: "Jour" }, { id: "semaine", label: "Semaine" }, { id: "mois", label: "Mois" }].map((p) => (
@@ -5207,7 +5279,7 @@ function PresencePanel({ accessToken }) {
   }, [accessToken, date, mois, vue]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+  usePeriodique(load, 60000, { immediat: false });
 
   function exportExcel() {
     setExporting(true);
@@ -5261,7 +5333,7 @@ function PresencePanel({ accessToken }) {
       <header className="mb-6 flex items-end justify-between">
         <div>
           <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Présence</h1>
-          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, pauses par type et taux d'occupation par agent — actualisé toutes les 30 secondes.</p>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Temps de production, pauses par type et taux d'occupation par agent — actualisé toutes les minutes.</p>
         </div>
         <div className="flex items-center gap-2">
           <div style={{ background: C.canvas, borderRadius: 8, padding: 3 }} className="flex gap-1">
@@ -5840,7 +5912,9 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
   // Cinq secondes pendant qu'on lit la conversation ouverte, rien quand
   // l'onglet est ailleurs : le compteur de la barre laterale suffit alors.
   useEffect(() => { setMessages(null); setRepondA(null); charger(); }, [charger]);
-  useEffect(() => { const t = setInterval(charger, 5000); return () => clearInterval(t); }, [charger]);
+  // 10 s au lieu de 5 : une conversation reste vivante, et le volume de
+  // requetes de la messagerie ouverte est divise par deux.
+  usePeriodique(charger, 10000, { immediat: false });
 
   // Marquer comme lu : la conversation ouverte et le repere global.
   const marquerLu = useCallback(async () => {
@@ -6244,7 +6318,7 @@ function Queue({ accessToken, refreshFlag, bump }) {
   useEffect(() => { load(); }, [load, refreshFlag]);
   // Une minute : le decompte affiche se met a jour chaque seconde sans rien
   // demander au serveur, seule la composition de la file a besoin d'etre relue.
-  useEffect(() => { const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);
+  usePeriodique(load, 60000, { immediat: false });
   useEffect(() => { const t = setInterval(() => forceTick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
 
   if (error) return <ErrorBlock message={error} />;
