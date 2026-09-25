@@ -1932,14 +1932,21 @@ function AgentSearch({ accessToken, agentId, onAfficher, ficheEnCours, enProduct
         const derniereParClient = new Map();
         for (const h of historique) if (!derniereParClient.has(h.client_id)) derniereParClient.set(h.client_id, h);
         // Une validation de moins de 30 jours verrouille la fiche, meme si
-        // d'autres qualifications l'ont suivie : on la cherche dans tout
-        // l'historique, pas seulement dans la derniere qualification.
+        // d'autres qualifications l'ont suivie, et meme si elle a ete faite
+        // sur une AUTRE fiche de la meme box (un autre lot) : la base connait
+        // toutes les fiches de la box, l'agent non. Repli sur l'historique de
+        // la fiche seule si la fonction n'est pas disponible.
         const validationParClient = new Map();
-        for (const h of historique) {
-          if (!validationParClient.has(h.client_id)
-              && h.types_qualification?.categorie === "Positif" && h.types_qualification?.motif === "Rechargement validé"
-              && maintenant - new Date(h.created_at).getTime() < 30 * 86400000) {
-            validationParClient.set(h.client_id, h);
+        try {
+          const verrous = await rpc("verrous_rechargement", accessToken, { p_client_ids: candidats.map((r) => r.id) });
+          for (const v of verrous || []) validationParClient.set(v.client_id, { created_at: v.validee_le });
+        } catch {
+          for (const h of historique) {
+            if (!validationParClient.has(h.client_id)
+                && h.types_qualification?.categorie === "Positif" && h.types_qualification?.motif === "Rechargement validé"
+                && maintenant - new Date(h.created_at).getTime() < 30 * 86400000) {
+              validationParClient.set(h.client_id, h);
+            }
           }
         }
         verrouillees = candidats
