@@ -2964,7 +2964,7 @@ function SupervisionPanel({ accessToken, callerRole }) {
       try {
         // Tous les types, actifs ou non : une pause ouverte avant qu'un type
         // soit desactive doit garder son nom a l'ecran.
-        const pts = await supaRest("pause_types?select=id,nom,couleur,duree_max_minutes,occurrences_max_jour", { accessToken });
+        const pts = await supaRest("pause_types?select=id,nom,couleur,duree_max_minutes,occurrences_max_jour,compte_presence", { accessToken });
         setTypesPause(new Map(pts.map((p) => [p.id, p])));
       } catch {}
     })();
@@ -2975,9 +2975,17 @@ function SupervisionPanel({ accessToken, callerRole }) {
     return () => clearInterval(t);
   }, []);
 
-  const lignes = useMemo(() => (agents || []).map((a) => ({
-    ...a, alertes: alertesAgent(a, seuils, typesPause, maintenant),
-  })), [agents, seuils, typesPause, maintenant]);
+  // Le dejeuner (types a compte_presence = false) n'est pas du temps de
+  // travail : il sort du taux d'occupation, comme dans l'ecran Presence.
+  const lignes = useMemo(() => (agents || []).map((a) => {
+    const secondesDejeuner = (a.pauses_jour || []).reduce(
+      (s, p) => s + (typesPause.get(p.type)?.compte_presence === false ? p.secondes : 0), 0);
+    return {
+      ...a,
+      secondes_pause_occupation: Math.max(0, a.secondes_pause - secondesDejeuner),
+      alertes: alertesAgent(a, seuils, typesPause, maintenant),
+    };
+  }), [agents, seuils, typesPause, maintenant]);
 
   // Carillon a l'apparition d'une alerte, pas tant qu'elle dure. Rien au
   // premier chargement : les alertes deja en cours ne sont pas des nouvelles.
@@ -3004,11 +3012,11 @@ function SupervisionPanel({ accessToken, callerRole }) {
   // Indicateurs sur la selection affichee : filtrer une equipe donne les
   // chiffres de cette equipe.
   const kpi = useMemo(() => {
-    const k = { prod: 0, pause: 0, deco: 0, fiches: 0, contacts: 0, ventes: 0, secProd: 0, secPause: 0, dureeTotale: 0, dureeN: 0, alertes: 0 };
+    const k = { prod: 0, pause: 0, deco: 0, fiches: 0, contacts: 0, ventes: 0, secProd: 0, secPauseOccupation: 0, dureeTotale: 0, dureeN: 0, alertes: 0 };
     for (const a of filtrees) {
       if (a.statut === "en_prod") k.prod++; else if (a.statut === "en_pause") k.pause++; else k.deco++;
       k.fiches += a.fiches_jour; k.contacts += a.contacts_jour; k.ventes += a.ventes_jour;
-      k.secProd += a.secondes_prod; k.secPause += a.secondes_pause;
+      k.secProd += a.secondes_prod; k.secPauseOccupation += a.secondes_pause_occupation;
       if (a.duree_moy_secondes !== null) { k.dureeTotale += a.duree_moy_secondes * a.fiches_jour; k.dureeN += a.fiches_jour; }
       if (a.alertes.length > 0) k.alertes++;
     }
@@ -3071,7 +3079,7 @@ function SupervisionPanel({ accessToken, callerRole }) {
               { titre: "Taux de contact", valeur: pct(kpi.contacts, kpi.fiches), detail: `${kpi.contacts.toLocaleString("fr-FR")} contacts` },
               { titre: "Ventes", valeur: kpi.ventes.toLocaleString("fr-FR"), detail: `${pct(kpi.ventes, kpi.contacts)} des contacts` },
               { titre: "Durée moy. de traitement", valeur: kpi.dureeN > 0 ? chrono(kpi.dureeTotale / kpi.dureeN) : "—", detail: "par fiche qualifiée" },
-              { titre: "Occupation", valeur: pct(kpi.secProd, kpi.secProd + kpi.secPause), detail: `${dureeLisible(kpi.secProd)} prod · ${dureeLisible(kpi.secPause)} pause` },
+              { titre: "Occupation", valeur: pct(kpi.secProd, kpi.secProd + kpi.secPauseOccupation), detail: `${dureeLisible(kpi.secProd)} prod · ${dureeLisible(kpi.secPauseOccupation)} pause hors déjeuner` },
               { titre: "Alertes", valeur: `${kpi.alertes}`, detail: kpi.alertes === 0 ? "rien à signaler" : `agent${kpi.alertes > 1 ? "s" : ""} à surveiller`, rouge: kpi.alertes > 0 },
             ].map((c) => (
               <div key={c.titre} style={{ background: c.rouge ? C.redSoft : C.surface, border: `1px solid ${c.rouge ? C.red : C.border}`, borderRadius: 12, padding: "12px 14px" }}>
@@ -3274,7 +3282,7 @@ function ClassementSupervision({ lignes, tri, setTri, pct, parHeure }) {
     { id: "duree_moy_secondes", l: "DMT", valeur: (a) => a.duree_moy_secondes ?? -1, rendu: (a) => (a.duree_moy_secondes === null ? "—" : chrono(a.duree_moy_secondes)) },
     { id: "secondes_prod", l: "Production", valeur: (a) => a.secondes_prod, rendu: (a) => dureeLisible(a.secondes_prod) },
     { id: "secondes_pause", l: "Pause", valeur: (a) => a.secondes_pause, rendu: (a) => dureeLisible(a.secondes_pause) },
-    { id: "occupation", l: "Occupation", valeur: (a) => (a.secondes_prod + a.secondes_pause > 0 ? a.secondes_prod / (a.secondes_prod + a.secondes_pause) : -1), rendu: (a) => pct(a.secondes_prod, a.secondes_prod + a.secondes_pause) },
+    { id: "occupation", l: "Occupation", valeur: (a) => (a.secondes_prod + a.secondes_pause_occupation > 0 ? a.secondes_prod / (a.secondes_prod + a.secondes_pause_occupation) : -1), rendu: (a) => pct(a.secondes_prod, a.secondes_prod + a.secondes_pause_occupation) },
   ];
   const col = colonnes.find((c) => c.id === tri.col) || colonnes[2];
   const triees = [...lignes].sort((a, b) => {
