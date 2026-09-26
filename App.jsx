@@ -195,6 +195,8 @@ const STYLES_INTERACTION = `
   .msg-actions { opacity: 0; transition: opacity .12s ease-out; }
   .msg-ligne:hover .msg-actions, .msg-ligne:focus-within .msg-actions, .msg-actions.ouvert { opacity: 1; }
   @media (hover: none) { .msg-actions { opacity: 1; } }
+  .choix-statut:not(:disabled):hover { background: ${C.canvas} !important; filter: none; }
+  .pastille-statut:not(:disabled):hover { box-shadow: 0 0 0 1px ${C.border}; filter: none; }
   .emoji-choix:hover { background: ${C.canvas} !important; filter: none; }
   .entree-canal:not([aria-current]):hover { background: ${C.canvas} !important; filter: none; }
   .zone-saisie { transition: border-color .15s ease-out, box-shadow .15s ease-out; }
@@ -980,8 +982,8 @@ function usePeriodique(fn, intervalle, { intervalleMasque = null, immediat = tru
 const ROLE_DEFAULT_TABS = {
   super_admin: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "equipes", "utilisateurs", "rules"],
   admin: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
-  superviseur: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export"],
-  coach: ["poste", "dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "export"],
+  superviseur: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "recyclage"],
+  coach: ["poste", "dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "export", "recyclage"],
   agent: ["poste", "resultats", "qualite", "analytics", "messagerie"],
 };
 const TAB_DEFS = [
@@ -1293,7 +1295,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "export" && effectiveTabs.has("export") && <ExportPanel accessToken={accessToken} />}
               {adminTab === "import" && effectiveTabs.has("import") && <ImportPanel accessToken={accessToken} bump={bump} />}
               {adminTab === "campagnes" && effectiveTabs.has("campagnes") && <CampaignsPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
-              {adminTab === "recyclage" && effectiveTabs.has("recyclage") && <RecyclagePanel accessToken={accessToken} />}
+              {adminTab === "recyclage" && effectiveTabs.has("recyclage") && (isAdmin ? <RecyclagePanel accessToken={accessToken} /> : <FichesBloqueesSeules accessToken={accessToken} />)}
               {adminTab === "equipes" && effectiveTabs.has("equipes") && <EquipesPanel accessToken={accessToken} />}
               {adminTab === "utilisateurs" && effectiveTabs.has("utilisateurs") && <UsersPanel accessToken={accessToken} isSuperAdmin={isSuperAdmin} />}
               {adminTab === "rules" && effectiveTabs.has("rules") && <Rules accessToken={accessToken} tree={tree} reload={loadTree} />}
@@ -2776,113 +2778,6 @@ function formatDuree(secondes) {
 
 /* ---------------------------------- statut en direct de l'équipe ---------------------------------- */
 
-function LiveStatusPanel({ accessToken, callerRole }) {
-  const [rows, setRows] = useState(null);
-  const [pauseTypesList, setPauseTypesList] = useState([]);
-  const [error, setError] = useState(null);
-  const [openMenuId, setOpenMenuId] = useState(null);
-  const [busyId, setBusyId] = useState(null);
-
-  const peutControler = ["admin", "super_admin", "superviseur"].includes(callerRole);
-
-  const load = useCallback(async () => {
-    try {
-      const perimetre = await rpc("mon_perimetre_personnes", accessToken, {});
-      const ids = (perimetre || []).map((r) => r.profil_id);
-      if (ids.length === 0) { setRows([]); return; }
-      const [profils, pauseTypes, pausesOuvertes] = await Promise.all([
-        fetchInChunks(`profils?select=id,nom,role,matricule,statut&role=in.(agent,superviseur,coach)&id=in.(`, ids, accessToken),
-        supaRest("pause_types?select=*&actif=eq.true&order=ordre.asc", { accessToken }),
-        fetchInChunks(`pause_details?select=agent_id,pause_type_id&fin=is.null&agent_id=in.(`, ids, accessToken),
-      ]);
-      setPauseTypesList(pauseTypes);
-      const list = profils.map((p) => {
-        const pauseOuverte = pausesOuvertes.find((d) => d.agent_id === p.id);
-        const pauseType = pauseOuverte ? pauseTypes.find((t) => t.id === pauseOuverte.pause_type_id) : null;
-        return { ...p, pauseLabel: pauseType?.nom || null, pauseCouleur: pauseType?.couleur || null };
-      });
-      list.sort((a, b) => {
-        const ordre = { en_prod: 0, en_pause: 1, deconnecte: 2 };
-        return (ordre[a.statut] ?? 3) - (ordre[b.statut] ?? 3) || a.nom.localeCompare(b.nom);
-      });
-      setRows(list);
-    } catch (e) { setError(e.message); }
-  }, [accessToken]);
-
-  usePeriodique(load, 60000);
-
-  async function forcerStatut(agentId, statut, pauseTypeId = null) {
-    setBusyId(agentId); setOpenMenuId(null);
-    try {
-      await rpc("forcer_statut_agent", accessToken, { p_agent_id: agentId, p_statut: statut, p_pause_type_id: pauseTypeId });
-      load();
-    } catch (e) { setError(e.message); } finally { setBusyId(null); }
-  }
-
-  if (error) return null; // discret : ne casse pas le reste du tableau de bord
-  if (!rows) return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 16 }}><CenterLoader /></div>;
-
-  return (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <CircleDot size={14} color={C.green} />
-          <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Statut en direct</h2>
-        </div>
-        <span style={{ fontSize: 10.5, color: C.mutedSoft }}>Actualisé toutes les minutes</span>
-      </div>
-      {rows.length === 0 ? (
-        <EtatVide compact icon={Users} titre="Aucune personne dans votre périmètre." />
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8 }}>
-          {rows.map((p) => {
-            const st = AGENT_STATUTS.find((s) => s.id === p.statut);
-            const dotColor = p.statut === "en_prod" ? C.green : p.statut === "en_pause" ? (p.pauseCouleur || C.amber) : C.mutedSoft;
-            const label = p.statut === "en_pause" && p.pauseLabel ? p.pauseLabel : (st?.label || p.statut);
-            const menuOuvert = openMenuId === p.id;
-            return (
-              <div key={p.id} style={{ position: "relative" }}>
-                <div className="flex items-center gap-2.5" onClick={() => peutControler && setOpenMenuId(menuOuvert ? null : p.id)}
-                  style={{ background: C.canvas, borderRadius: 9, padding: "9px 12px", cursor: peutControler ? "pointer" : "default" }}>
-                  {busyId === p.id ? (
-                    <Loader2 size={11} className="animate-spin" style={{ flexShrink: 0 }} />
-                  ) : (
-                    <span style={{ width: 8, height: 8, borderRadius: 999, background: dotColor, flexShrink: 0, boxShadow: p.statut === "en_prod" ? `0 0 0 3px ${C.greenSoft}` : "none" }} />
-                  )}
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.nom}</div>
-                    <div style={{ fontSize: 10.5, color: C.muted }}>{label}</div>
-                  </div>
-                  {peutControler && <ChevronDown size={12} color={C.mutedSoft} style={{ flexShrink: 0 }} />}
-                </div>
-                {menuOuvert && (
-                  <div className="apparait-bas" style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", zIndex: 20, overflow: "hidden" }}>
-                    <button onClick={() => forcerStatut(p.id, "en_prod")}
-                      className="flex items-center gap-2" style={{ width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 12, textAlign: "left" }}>
-                      <PlayCircle size={12} color={C.green} /> Production
-                    </button>
-                    <div style={{ borderTop: `1px solid ${C.borderSoft}`, padding: "6px 12px 2px", fontSize: 9.5, color: C.mutedSoft, textTransform: "uppercase" }}>Pause</div>
-                    {pauseTypesList.map((pt) => (
-                      <button key={pt.id} onClick={() => forcerStatut(p.id, "en_pause", pt.id)}
-                        className="flex items-center gap-2" style={{ width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, textAlign: "left" }}>
-                        <span style={{ width: 7, height: 7, borderRadius: 999, background: pt.couleur || C.amber }} /> {pt.nom}
-                      </button>
-                    ))}
-                    <button onClick={() => forcerStatut(p.id, "deconnecte")}
-                      className="flex items-center gap-2" style={{ width: "100%", padding: "8px 12px", background: "none", border: "none", borderTop: `1px solid ${C.borderSoft}`, fontSize: 12, textAlign: "left", color: C.red }}>
-                      <PowerOff size={12} /> Déconnecter
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ---------------------------------- supervision ---------------------------------- */
 
 // Valeurs de repli tant que supervision_seuils n'a pas repondu : les memes que
@@ -3014,7 +2909,7 @@ function SupervisionPanel({ accessToken, callerRole }) {
       try {
         // Tous les types, actifs ou non : une pause ouverte avant qu'un type
         // soit desactive doit garder son nom a l'ecran.
-        const pts = await supaRest("pause_types?select=id,nom,couleur,duree_max_minutes,occurrences_max_jour,compte_presence", { accessToken });
+        const pts = await supaRest("pause_types?select=id,nom,couleur,duree_max_minutes,occurrences_max_jour,compte_presence,actif,ordre&order=ordre.asc", { accessToken });
         setTypesPause(new Map(pts.map((p) => [p.id, p])));
       } catch {}
     })();
@@ -3024,6 +2919,36 @@ function SupervisionPanel({ accessToken, callerRole }) {
     const t = setInterval(() => setMaintenant(Date.now() + decalageRef.current), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // Rappels en attente : un total pour le superviseur, pas la liste par agent.
+  // Une minute suffit, un rappel ne se pose pas a la seconde.
+  const [rappels, setRappels] = useState([]);
+  const chargerRappels = useCallback(async () => {
+    try { setRappels(await supaRest("vue_rappels_par_agent?select=agent_id,total,en_retard", { accessToken }) || []); } catch {}
+  }, [accessToken]);
+  usePeriodique(chargerRappels, 60000);
+
+  // Changer le statut d'un agent depuis sa carte : production, une pause, ou
+  // deconnexion. Reserve a l'encadrement, comme la fonction en base.
+  const peutChangerStatut = ["admin", "super_admin", "superviseur"].includes(callerRole);
+  const [menuStatut, setMenuStatut] = useState(null);
+  const [statutEnCours, setStatutEnCours] = useState(null);
+  useEffect(() => {
+    if (!menuStatut) return undefined;
+    const clic = (e) => { if (!e.target.closest?.(".menu-statut")) setMenuStatut(null); };
+    const touche = (e) => { if (e.key === "Escape") setMenuStatut(null); };
+    document.addEventListener("mousedown", clic);
+    document.addEventListener("keydown", touche);
+    return () => { document.removeEventListener("mousedown", clic); document.removeEventListener("keydown", touche); };
+  }, [menuStatut]);
+  async function changerStatut(agentId, statut, pauseTypeId = null) {
+    setMenuStatut(null); setStatutEnCours(agentId); setError(null);
+    try {
+      await rpc("forcer_statut_agent", accessToken, { p_agent_id: agentId, p_statut: statut, p_pause_type_id: pauseTypeId });
+      await load();
+    } catch (e) { setError(e.message); } finally { setStatutEnCours(null); }
+  }
+  const pausesActives = useMemo(() => [...typesPause.values()].filter((t) => t.actif !== false), [typesPause]);
 
   // Le dejeuner (types a compte_presence = false) n'est pas du temps de
   // travail : il sort du taux d'occupation, comme dans l'ecran Presence.
@@ -3103,6 +3028,9 @@ function SupervisionPanel({ accessToken, callerRole }) {
   const presents = kpi.prod + kpi.pause;
   const effectif = presents + kpi.deco;
   const ilYa = majLe ? Math.max(0, Math.round((Date.now() - majLe) / 1000)) : null;
+  const idsSelection = new Set(selection.map((a) => a.agent_id));
+  const rappelsSelection = rappels.filter((r) => idsSelection.has(r.agent_id))
+    .reduce((t, r) => ({ total: t.total + (r.total || 0), retard: t.retard + (r.en_retard || 0) }), { total: 0, retard: 0 });
 
   const ETATS = [
     { id: "tous", l: "Tous", n: selection.length },
@@ -3180,6 +3108,7 @@ function SupervisionPanel({ accessToken, callerRole }) {
               { titre: "Ventes", valeur: kpi.ventes.toLocaleString("fr-FR"), detail: `${pct(kpi.ventes, kpi.contacts)} des contacts`, icone: ShoppingCart },
               { titre: "Durée moy. de traitement", valeur: kpi.dureeN > 0 ? chrono(kpi.dureeTotale / kpi.dureeN) : "—", detail: "par fiche qualifiée", icone: Timer },
               { titre: "Occupation", valeur: pct(kpi.secProd, kpi.secProd + kpi.secPauseOccupation), detail: `${dureeLisible(kpi.secProd)} prod · ${dureeLisible(kpi.secPauseOccupation)} pause hors déjeuner`, icone: Activity },
+              { titre: "Rappels en attente", valeur: rappelsSelection.total.toLocaleString("fr-FR"), detail: rappelsSelection.retard > 0 ? `dont ${rappelsSelection.retard.toLocaleString("fr-FR")} en retard` : "aucun en retard", icone: BellRing, retard: rappelsSelection.retard > 0 },
             ].map((c) => (
               <div key={c.titre} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: "13px 15px" }}>
                 <div className="flex items-center justify-between" style={{ gap: 6 }}>
@@ -3187,7 +3116,7 @@ function SupervisionPanel({ accessToken, callerRole }) {
                   <c.icone size={13} color={C.mutedSoft} style={{ flexShrink: 0 }} />
                 </div>
                 <div className="disp" style={{ fontSize: 23, fontWeight: 600, marginTop: 5, color: C.text }}>{c.valeur}</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2, lineHeight: 1.35 }}>{c.detail}</div>
+                <div style={{ fontSize: 11, color: c.retard ? C.red : C.muted, fontWeight: c.retard ? 600 : 400, marginTop: 2, lineHeight: 1.35 }}>{c.detail}</div>
               </div>
             ))}
             {/* Alertes : un clic affiche seulement les agents concernes. */}
@@ -3291,7 +3220,8 @@ function SupervisionPanel({ accessToken, callerRole }) {
                 <div style={{ marginBottom: 16 }}>
                   {titreSection("À surveiller", enAlerte.length, C.red)}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-                    {enAlerte.map((a) => <CarteSupervision key={a.agent_id} a={a} typesPause={typesPause} maintenant={maintenant} seuils={seuils} />)}
+                    {enAlerte.map((a) => <CarteSupervision key={a.agent_id} a={a} typesPause={typesPause} maintenant={maintenant} seuils={seuils}
+                      controle={peutChangerStatut ? { ouvert: menuStatut === a.agent_id, enCours: statutEnCours === a.agent_id, pauses: pausesActives, basculer: () => setMenuStatut((m) => (m === a.agent_id ? null : a.agent_id)), changer: changerStatut } : null} />)}
                   </div>
                 </div>
               )}
@@ -3299,7 +3229,8 @@ function SupervisionPanel({ accessToken, callerRole }) {
                 <div style={{ marginBottom: 16 }}>
                   {enAlerte.length > 0 && titreSection("En activité", sansAlerte.length)}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-                    {sansAlerte.map((a) => <CarteSupervision key={a.agent_id} a={a} typesPause={typesPause} maintenant={maintenant} seuils={seuils} />)}
+                    {sansAlerte.map((a) => <CarteSupervision key={a.agent_id} a={a} typesPause={typesPause} maintenant={maintenant} seuils={seuils}
+                      controle={peutChangerStatut ? { ouvert: menuStatut === a.agent_id, enCours: statutEnCours === a.agent_id, pauses: pausesActives, basculer: () => setMenuStatut((m) => (m === a.agent_id ? null : a.agent_id)), changer: changerStatut } : null} />)}
                   </div>
                 </div>
               )}
@@ -3336,7 +3267,7 @@ function voileCouleur(hex, alpha = 0.14) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
-function CarteSupervision({ a, typesPause, maintenant, seuils }) {
+function CarteSupervision({ a, typesPause, maintenant, seuils, controle }) {
   const enAlerte = a.alertes.length > 0;
   const pause = a.statut === "en_pause" ? typesPause.get(a.pause_type_id) : null;
   const couleurStatut = a.statut === "en_prod" ? C.green : a.statut === "en_pause" ? (pause?.couleur || C.amber) : C.mutedSoft;
@@ -3360,10 +3291,43 @@ function CarteSupervision({ a, typesPause, maintenant, seuils }) {
             {[a.matricule, a.equipe, a.role === "coach" ? "coach" : null].filter(Boolean).join(" · ") || "—"}
           </div>
         </div>
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <span className="flex items-center gap-1.5" style={{ justifyContent: "flex-end", fontSize: 11, fontWeight: 600, color: a.statut === "deconnecte" ? C.muted : C.text, background: voileCouleur(couleurStatut), borderRadius: 999, padding: "2px 8px" }}>
-            <span style={{ width: 7, height: 7, borderRadius: 999, background: couleurStatut }} /> {libelleStatut}
-          </span>
+        <div className="menu-statut" style={{ textAlign: "right", flexShrink: 0, position: "relative" }}>
+          {controle ? (
+            <button onClick={controle.basculer} disabled={controle.enCours} aria-haspopup="menu" aria-expanded={controle.ouvert}
+              title="Changer le statut de l'agent" className="flex items-center gap-1.5 pastille-statut"
+              style={{ marginLeft: "auto", fontSize: 11, fontWeight: 600, color: C.text, background: voileCouleur(couleurStatut), border: "none", borderRadius: 999, padding: "2px 6px 2px 8px" }}>
+              {controle.enCours ? <Loader2 size={9} className="animate-spin" /> : <span style={{ width: 7, height: 7, borderRadius: 999, background: couleurStatut }} />}
+              {libelleStatut}
+              <ChevronDown size={11} color={C.muted} />
+            </button>
+          ) : (
+            <span className="flex items-center gap-1.5" style={{ justifyContent: "flex-end", fontSize: 11, fontWeight: 600, color: a.statut === "deconnecte" ? C.muted : C.text, background: voileCouleur(couleurStatut), borderRadius: 999, padding: "2px 8px" }}>
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: couleurStatut }} /> {libelleStatut}
+            </span>
+          )}
+          {controle?.ouvert && (
+            <div role="menu" className="apparait-bas" style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, width: 190, textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 12px 28px rgba(0,11,83,0.16)", zIndex: 25, overflow: "hidden", padding: 4 }}>
+              <button role="menuitem" onClick={() => controle.changer(a.agent_id, "en_prod")} disabled={a.statut === "en_prod"}
+                className="flex items-center gap-2 choix-statut" style={{ width: "100%", padding: "7px 9px", background: "none", border: "none", borderRadius: 7, fontSize: 12, textAlign: "left", color: C.text }}>
+                <PlayCircle size={13} color={C.green} /> Production
+              </button>
+              {controle.pauses.length > 0 && (
+                <div style={{ padding: "6px 9px 2px", fontSize: 10, color: C.mutedSoft, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 }}>Pause</div>
+              )}
+              {controle.pauses.map((pt) => (
+                <button key={pt.id} role="menuitem" onClick={() => controle.changer(a.agent_id, "en_pause", pt.id)}
+                  disabled={a.statut === "en_pause" && a.pause_type_id === pt.id}
+                  className="flex items-center gap-2 choix-statut" style={{ width: "100%", padding: "7px 9px", background: "none", border: "none", borderRadius: 7, fontSize: 12, textAlign: "left", color: C.text }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 999, background: pt.couleur || C.amber, flexShrink: 0 }} /> {pt.nom}
+                </button>
+              ))}
+              <div style={{ height: 1, background: C.borderSoft, margin: "4px 0" }} />
+              <button role="menuitem" onClick={() => controle.changer(a.agent_id, "deconnecte")}
+                className="flex items-center gap-2 choix-statut" style={{ width: "100%", padding: "7px 9px", background: "none", border: "none", borderRadius: 7, fontSize: 12, textAlign: "left", color: C.red }}>
+                <PowerOff size={13} /> Déconnecter
+              </button>
+            </div>
+          )}
           <div className="mono" style={{ fontSize: 13, fontWeight: 500, color: C.text, marginTop: 3 }}>{chrono(dureeStatut)}</div>
         </div>
       </div>
@@ -4628,7 +4592,9 @@ function QcReglages({ accessToken, grilleActive, lienModele, lienAppelModele, on
 
 /* ---------------------------------- fiches bloquées de l'équipe (vue d'ensemble) ---------------------------------- */
 
-function FichesBloqueesEquipe({ accessToken }) {
+const DELAI_FICHE_BLOQUEE_MINUTES = 30;
+
+function FichesBloqueesEquipe({ accessToken, afficherVide }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState(null);
   const [liberationEnCours, setLiberationEnCours] = useState(null);
@@ -4642,7 +4608,10 @@ function FichesBloqueesEquipe({ accessToken }) {
         fetchInChunks(`clients?select=id,nom,numero_fiche,agent_id,recuperee_le&statut=eq.en_cours&agent_id=in.(`, agentIds, accessToken),
         fetchInChunks(`profils?select=id,nom&id=in.(`, agentIds, accessToken),
       ]);
-      const merged = clients.map((c) => ({ ...c, agentNom: profils.find((p) => p.id === c.agent_id)?.nom || "Agent" }));
+      const limite = Date.now() - DELAI_FICHE_BLOQUEE_MINUTES * 60000;
+      const merged = clients
+        .filter((c) => !c.recuperee_le || new Date(c.recuperee_le).getTime() < limite)
+        .map((c) => ({ ...c, agentNom: profils.find((p) => p.id === c.agent_id)?.nom || "Agent" }));
       // Les fiches recuperees avant l'ajout de recuperee_le n'ont pas de date :
       // on les laisse en tete, ce sont les plus anciennes par construction.
       merged.sort((a, b) => new Date(a.recuperee_le || 0) - new Date(b.recuperee_le || 0));
@@ -4661,18 +4630,26 @@ function FichesBloqueesEquipe({ accessToken }) {
   }
 
   if (error) return <div className="mb-4"><ErrorBlock message={error} /></div>;
-  if (!rows || rows.length === 0) return null; // rien à signaler : on ne surcharge pas l'écran
+  if (!rows) return afficherVide ? <CenterLoader /> : null;
+  if (rows.length === 0) {
+    // Dans le Recyclage complet, rien a signaler ne prend aucune place ; seul,
+    // l'ecran dit clairement qu'il n'y a rien a liberer.
+    return afficherVide
+      ? <EtatVide icon={CheckCircle2} titre="Aucune fiche bloquée." detail={`Les fiches restées en cours plus de ${DELAI_FICHE_BLOQUEE_MINUTES} minutes chez un agent de votre équipe apparaîtront ici.`} />
+      : null;
+  }
 
   return (
-    <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
-      <div className="flex items-center gap-2 mb-4">
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, boxShadow: `inset 3px 0 0 ${C.amber}`, borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
+      <div className="flex items-center gap-2 mb-3" style={{ flexWrap: "wrap" }}>
         <AlertTriangle size={14} color={C.amber} />
         <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Fiches bloquées de l'équipe</h2>
-        <span style={{ fontSize: 11, color: C.muted }}>— jamais qualifiées, sans doute oubliées</span>
+        <span className="mono" style={{ fontSize: 11, fontWeight: 700, background: C.amberSoft, color: C.ink, borderRadius: 999, padding: "1px 8px" }}>{rows.length}</span>
+        <span style={{ fontSize: 11.5, color: C.muted }}>en cours depuis plus de {DELAI_FICHE_BLOQUEE_MINUTES} min, jamais qualifiées : sans doute oubliées</span>
       </div>
-      <div className="flex flex-col gap-2">
-        {rows.map((r) => (
-          <div key={r.id} className="flex items-center justify-between" style={{ background: C.surface, borderRadius: 9, padding: "9px 14px" }}>
+      <div className="flex flex-col" style={{ maxHeight: 300, overflowY: "auto" }}>
+        {rows.map((r, i) => (
+          <div key={r.id} className="flex items-center justify-between" style={{ borderTop: i > 0 ? `1px solid ${C.borderSoft}` : "none", padding: "8px 2px", gap: 12 }}>
             <div>
               <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.nom}</span>
               <span className="mono" style={{ fontSize: 11, color: C.mutedSoft, marginLeft: 8 }}>#{r.numero_fiche}</span>
@@ -5289,7 +5266,6 @@ function DailyChart({ titre, serie, couleur, pourcentage, reference }) {
 
 function Dashboard({ accessToken, refreshFlag, callerRole }) {
   const [counts, setCounts] = useState(null);
-  const [parAgent, setParAgent] = useState(null);
   const [perf, setPerf] = useState(null); // { traitees, contacts, ventes, dureeMoyenne }
   const [error, setError] = useState(null);
   const [periode, setPeriode] = useState("jour"); // jour | semaine | mois
@@ -5317,14 +5293,6 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
       const c = { disponible: 0, en_cours: 0, planifie: 0, archive: 0, total: 0 };
       statutRows.forEach((r) => { c[r.statut] = r.total; c.total += r.total; });
       setCounts(c);
-
-      const rappels = await supaRest("vue_rappels_par_agent?select=*", { accessToken });
-      const profils = await supaRest("profils?select=id,nom,statut", { accessToken });
-      const list = rappels.map((r) => ({
-        agentId: r.agent_id, nom: profils.find((p) => p.id === r.agent_id)?.nom || "Agent",
-        statut: profils.find((p) => p.id === r.agent_id)?.statut, total: r.total, enRetard: r.en_retard,
-      })).sort((a, b) => b.enRetard - a.enRetard || b.total - a.total);
-      setParAgent(list);
 
       // Performance sur la période choisie (jour/semaine/mois), agrégation SQL scopée
       const debut = debutPeriode(periode);
@@ -5373,12 +5341,13 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
       <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: -12, marginBottom: 16 }}>
         Le calendrier ne s'applique qu'à la performance ci-dessous (joignabilité, conversion, temps de traitement) — les compteurs de fiches reflètent toujours l'état actuel.
       </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
         {stats.map((s) => (
-          <div key={s.label} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
-            <s.icon size={16} color={s.color} />
-            <div className="disp mono" style={{ fontSize: 26, fontWeight: 700, marginTop: 10 }}>{s.value}</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{s.label}</div>
+          <div key={s.label} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+            <div className="flex items-center gap-1.5" style={{ fontSize: 11.5, color: C.muted, fontWeight: 500 }}>
+              <s.icon size={13} color={s.color} /> {s.label}
+            </div>
+            <div className="disp" style={{ fontSize: 22, fontWeight: 600, marginTop: 4 }}>{Number(s.value || 0).toLocaleString("fr-FR")}</div>
           </div>
         ))}
       </div>
@@ -5424,41 +5393,6 @@ function Dashboard({ accessToken, refreshFlag, callerRole }) {
 
       <ProgressionParLot rows={parLot} periode={periode} />
 
-      <LiveStatusPanel accessToken={accessToken} callerRole={callerRole} />
-      <FichesBloqueesEquipe accessToken={accessToken} />
-
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
-        <div className="flex items-center gap-2 mb-4">
-          <BellRing size={15} color={C.amber} />
-          <h2 className="disp" style={{ fontSize: 15, fontWeight: 600 }}>Rappels non traités par agent</h2>
-        </div>
-        {!parAgent || parAgent.length === 0 ? (
-          <EtatVide icon={BellRing} titre="Aucun rappel en attente." detail="Les rappels posés par les agents apparaîtront ici, par agent." />
-        ) : (
-          <div className="flex flex-col gap-2">
-            {parAgent.map((a) => (
-              <div key={a.agentId} className="flex items-center justify-between" style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8 }}>
-                <div className="flex items-center gap-2">
-                  <span style={{ fontSize: 12.5, fontWeight: 500 }}>{a.nom}</span>
-                  <span style={{ fontSize: 10, color: C.mutedSoft }}>
-                    {AGENT_STATUTS.find((s) => s.id === a.statut)?.label || a.statut}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {a.enRetard > 0 && (
-                    <span style={{ background: C.redSoft, color: C.red, fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 999 }}>
-                      {a.enRetard} en retard
-                    </span>
-                  )}
-                  <span style={{ background: C.amberSoft, color: C.amber, fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 999 }}>
-                    {a.total} au total
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -7954,6 +7888,22 @@ function GroupesTab({ accessToken, groupes, agents, membres, selected, setSelect
 
 const RECYCLAGE_STATUTS = ["archive", "planifie", "en_cours"];
 
+// Superviseurs et coachs : seulement les fiches bloquees de leur equipe. Le
+// recyclage des campagnes reste a l'administration.
+function FichesBloqueesSeules({ accessToken }) {
+  return (
+    <div>
+      <header className="mb-6">
+        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Recyclage des fiches</h1>
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+          Les fiches restées en cours chez un agent de votre équipe sans jamais être qualifiées. Libérez-les pour qu'elles repartent dans la file.
+        </p>
+      </header>
+      <FichesBloqueesEquipe accessToken={accessToken} afficherVide />
+    </div>
+  );
+}
+
 function RecyclagePanel({ accessToken }) {
   const [campagnes, setCampagnes] = useState(null);
   const [error, setError] = useState(null);
@@ -8030,6 +7980,8 @@ function RecyclagePanel({ accessToken }) {
           Remettez en circulation des fiches archivées ou oubliées d'une campagne : elles repassent disponibles, sans agent assigné, dans leur lot d'origine.
         </p>
       </header>
+
+      <FichesBloqueesEquipe accessToken={accessToken} />
 
       {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
       {successMsg && (
