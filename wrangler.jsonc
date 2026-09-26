@@ -1,8 +1,13 @@
 {
   "name": "aureo-app",
+  "main": "worker.js",
   "compatibility_date": "2026-08-26",
   "assets": {
     "directory": "dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Toute visite passe par worker.js : a l'adresse workers.dev, elle est
+    // renvoyee vers le portail, qui applique la regle du plateau.
+    "run_worker_first": true
   }
 }
