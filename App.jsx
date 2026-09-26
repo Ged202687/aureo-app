@@ -984,6 +984,9 @@ const ROLE_DEFAULT_TABS = {
   admin: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "import", "campagnes", "recyclage", "utilisateurs", "rules"],
   superviseur: ["dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "queue", "recherche", "presence", "export", "recyclage"],
   coach: ["poste", "dashboard", "supervision", "qualite", "resultats", "analytics", "messagerie", "export", "recyclage"],
+  // Direction generale : les statistiques, sans rien modifier (la base ne lui
+  // donne aucun droit d'ecriture).
+  direction: ["dashboard", "supervision", "resultats", "analytics", "presence"],
   agent: ["poste", "resultats", "qualite", "analytics", "messagerie"],
 };
 const TAB_DEFS = [
@@ -1012,7 +1015,8 @@ function Workspace({ session, onLogout, onProfilChange }) {
   const isAdmin = profil?.role === "admin" || isSuperAdmin;
   const isSuperviseur = profil?.role === "superviseur";
   const isCoach = profil?.role === "coach";
-  const [role, setRole] = useState(isAdmin ? "admin" : isSuperviseur ? "superviseur" : isCoach ? "coach" : "agent");
+  const isDirection = profil?.role === "direction";
+  const [role, setRole] = useState(isAdmin ? "admin" : isSuperviseur ? "superviseur" : isCoach ? "coach" : isDirection ? "direction" : "agent");
   const [adminTab, setAdminTab] = useState((ROLE_DEFAULT_TABS[profil?.role] || ["dashboard"])[0]);
   const [tree, setTree] = useState([]);
 
@@ -1227,9 +1231,10 @@ function Workspace({ session, onLogout, onProfilChange }) {
               </div>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profil?.nom || session.user.email}</div>
-                <div style={{ fontSize: 10.5, color: "#8F94BC" }}>{isSuperAdmin ? "Super Administrateur" : isAdmin ? "Administrateur" : isSuperviseur ? "Superviseur" : isCoach ? "Coach" : "Agent"}</div>
+                <div style={{ fontSize: 10.5, color: "#8F94BC" }}>{isSuperAdmin ? "Super Administrateur" : isAdmin ? "Administrateur" : isDirection ? "Direction générale" : isSuperviseur ? "Superviseur" : isCoach ? "Coach" : "Agent"}</div>
               </div>
             </div>
+            {!isDirection && <>
             <div className="flex items-center gap-1.5 mono mb-3" style={{ fontSize: 11.5, color: C.sun, background: "rgba(253,207,79,0.12)", borderRadius: 7, padding: "5px 9px" }}>
               <Timer size={12} /> {elapsed}
             </div>
@@ -1268,6 +1273,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
                 ? (pauseTypes.find((pt) => pt.id === currentPauseTypeId)?.nom || "Pause")
                 : (AGENT_STATUTS.find((s) => s.id === profil?.statut)?.label || "—")}
             </div>
+            </>}
 
             <button onClick={onLogout} className="flex items-center gap-1.5 bouton-sortie" style={{ width: "100%", justifyContent: "center", background: "transparent", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 9, color: "#C7CBEB", fontSize: 12, fontWeight: 500, padding: "8px 10px" }}>
               <LogOut size={13} /> Se déconnecter
@@ -1286,7 +1292,7 @@ function Workspace({ session, onLogout, onProfilChange }) {
               {adminTab === "dashboard" && effectiveTabs.has("dashboard") && <Dashboard accessToken={accessToken} refreshFlag={refreshFlag} callerRole={profil?.role} />}
               {adminTab === "supervision" && effectiveTabs.has("supervision") && <SupervisionPanel accessToken={accessToken} callerRole={profil?.role} />}
               {adminTab === "qualite" && effectiveTabs.has("qualite") && <QualitePanel accessToken={accessToken} role={role === "agent" ? "agent" : profil?.role} moiId={session.user.id} onCompteurs={chargerQcCompteurs} compteurs={qcCompteurs} />}
-              {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach} />}
+              {adminTab === "resultats" && effectiveTabs.has("resultats") && <MesResultatsPanel accessToken={accessToken} montrerDetailParAgent={isAdmin || isCoach || isDirection} />}
               {adminTab === "analytics" && effectiveTabs.has("analytics") && <AnalyticsPanel accessToken={accessToken} />}
               {adminTab === "messagerie" && effectiveTabs.has("messagerie") && <Messagerie accessToken={accessToken} moi={profil} moiId={session.user.id} onLu={compterNonLus} isSuperAdmin={isSuperAdmin} sonActif={sonActif} setSonActif={setSonActif} nonLusParCanal={nonLusParCanal} />}
               {adminTab === "queue" && effectiveTabs.has("queue") && <Queue accessToken={accessToken} refreshFlag={refreshFlag} bump={bump} />}
@@ -6210,7 +6216,7 @@ function Messagerie({ accessToken, moi, moiId, onLu, isSuperAdmin, sonActif, set
     : canal.type === "equipe" ? (equipes.find((e) => e.id === canal.id)?.nom || "Équipe")
     : nomDe(canal.id);
 
-  const ROLE_COURT = { super_admin: "Super admin", admin: "Admin", superviseur: "Superviseur", coach: "Coach", agent: "Agent" };
+  const ROLE_COURT = { super_admin: "Super admin", admin: "Admin", direction: "Direction", superviseur: "Superviseur", coach: "Coach", agent: "Agent" };
 
   async function basculerReglage() {
     setBascule(true);
@@ -8076,6 +8082,33 @@ function RecyclagePanel({ accessToken }) {
 /* ---------------------------------- super admin : équipes ---------------------------------- */
 
 function EquipesPanel({ accessToken }) {
+  const [vue, setVue] = useState("equipes");
+  return (
+    <div>
+      <header className="mb-5 flex items-start justify-between" style={{ gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>{vue === "equipes" ? "Équipes" : "Projets"}</h1>
+          <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
+            {vue === "equipes"
+              ? "Chaque équipe regroupe des agents et est rattachée à un coach. Renommer une équipe n'affecte pas ses agents."
+              : "Chaque agent, coach compris, appartient à un projet (MTN, FIDELIS…). Une équipe peut mêler plusieurs projets."}
+          </p>
+        </div>
+        <div role="group" aria-label="Vue" style={{ display: "flex", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 3 }}>
+          {[{ id: "equipes", l: "Équipes" }, { id: "projets", l: "Projets" }].map((v) => (
+            <button key={v.id} onClick={() => setVue(v.id)} aria-pressed={vue === v.id}
+              style={{ background: vue === v.id ? C.ink : "transparent", color: vue === v.id ? "#fff" : C.text, border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12.5, fontWeight: 600 }}>
+              {v.l}
+            </button>
+          ))}
+        </div>
+      </header>
+      {vue === "equipes" ? <EquipesGestion accessToken={accessToken} /> : <ProjetsGestion accessToken={accessToken} />}
+    </div>
+  );
+}
+
+function EquipesGestion({ accessToken }) {
   const [equipes, setEquipes] = useState(null);
   const [coachs, setCoachs] = useState(null);
   const [agents, setAgents] = useState(null);
@@ -8151,13 +8184,6 @@ function EquipesPanel({ accessToken }) {
 
   return (
     <div>
-      <header className="mb-6">
-        <h1 className="disp" style={{ fontSize: 25, fontWeight: 700 }}>Équipes</h1>
-        <p style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>
-          Chaque équipe regroupe des agents et est rattachée à un coach. Renommer une équipe n'affecte pas ses agents.
-        </p>
-      </header>
-
       {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20 }}>
@@ -8281,6 +8307,217 @@ function EquipesPanel({ accessToken }) {
                       {agentsSansEquipe.map((a) => <option key={a.id} value={a.id}>{a.nom}</option>)}
                     </select>
                   </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Projets : chaque agent (coach compris) a son projet. On cree les projets,
+// on y affecte des personnes une a une ou toute une equipe d'un coup. Chaque
+// changement est date en base (projets_historique) : Zenith y lit les
+// migrations d'un projet a l'autre.
+function ProjetsGestion({ accessToken }) {
+  const [projets, setProjets] = useState(null);
+  const [personnes, setPersonnes] = useState(null);
+  const [equipes, setEquipes] = useState([]);
+  const [error, setError] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [nomNouveau, setNomNouveau] = useState("");
+  const [creation, setCreation] = useState(false);
+  const [enCours, setEnCours] = useState(false);
+  const [edition, setEdition] = useState(null);
+  const [message, setMessage] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [pr, pe, eq] = await Promise.all([
+        supaRest("projets?select=*&order=nom.asc", { accessToken }),
+        supaRest("profils?select=id,nom,role,matricule,equipe_id,projet_id&role=in.(agent,coach)&actif=eq.true&order=nom.asc", { accessToken }),
+        supaRest("equipes?select=id,nom&order=nom.asc", { accessToken }),
+      ]);
+      setProjets(pr); setPersonnes(pe); setEquipes(eq);
+      setSelected((s) => s ?? pr.find((p) => p.actif)?.id ?? null);
+    } catch (e) { setError(e.message); }
+  }, [accessToken]);
+  useEffect(() => { load(); }, [load]);
+
+  async function creerProjet() {
+    if (!nomNouveau.trim()) return;
+    setEnCours(true); setError(null);
+    try {
+      const r = await rpc("super_admin_creer_projet", accessToken, { p_nom: nomNouveau.trim() });
+      const ligne = Array.isArray(r) ? r[0] : r;
+      setNomNouveau(""); setCreation(false);
+      await load();
+      if (ligne?.id) setSelected(ligne.id);
+    } catch (e) { setError(e.message); } finally { setEnCours(false); }
+  }
+
+  async function modifierProjet(id, nom, actif) {
+    setEnCours(true); setError(null);
+    try {
+      await rpc("super_admin_modifier_projet", accessToken, { p_projet_id: id, p_nom: nom, p_actif: actif });
+      setEdition(null);
+      await load();
+    } catch (e) { setError(e.message); } finally { setEnCours(false); }
+  }
+
+  async function affecter(ids, projetId, texte) {
+    if (ids.length === 0) return;
+    setEnCours(true); setError(null); setMessage(null);
+    try {
+      const n = await rpc("super_admin_affecter_projet", accessToken, { p_profil_ids: ids, p_projet_id: projetId });
+      await load();
+      setMessage(texte ? texte(Number(n) || 0) : null);
+    } catch (e) { setError(e.message); } finally { setEnCours(false); }
+  }
+
+  if (!projets || !personnes) return error ? <ErrorBlock message={error} /> : <CenterLoader />;
+
+  const current = projets.find((p) => p.id === selected) || null;
+  const nomEquipe = (id) => equipes.find((e) => e.id === id)?.nom;
+  const membres = current ? personnes.filter((p) => p.projet_id === current.id) : [];
+  const autres = current ? personnes.filter((p) => p.projet_id !== current.id) : [];
+  const sansProjet = personnes.filter((p) => !p.projet_id);
+  const equipesAvecMonde = equipes.filter((e) => personnes.some((p) => p.equipe_id === e.id));
+  const nomProjet = (id) => projets.find((p) => p.id === id)?.nom;
+
+  return (
+    <div>
+      {error && <div className="mb-4"><ErrorBlock message={error} /></div>}
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20 }}>
+        <div>
+          <button onClick={() => setCreation((v) => !v)}
+            style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: C.ink, color: "#fff", border: "none", borderRadius: 9, padding: "10px 0", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+            <Plus size={14} /> Nouveau projet
+          </button>
+          {creation && (
+            <div style={{ background: C.surface, border: `1.5px solid ${C.ink}`, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+              <input value={nomNouveau} onChange={(e) => setNomNouveau(e.target.value)} placeholder="Nom du projet (ex. NSIA)…" autoFocus
+                onKeyDown={(e) => { if (e.key === "Enter") creerProjet(); }}
+                style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 9px", fontSize: 12.5, marginBottom: 8 }} />
+              <button onClick={creerProjet} disabled={enCours || !nomNouveau.trim()}
+                style={{ width: "100%", background: C.sun, color: C.ink, border: "none", borderRadius: 7, padding: "8px 0", fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                {enCours && <Loader2 size={12} className="animate-spin" />} Créer
+              </button>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            {projets.length === 0 && <EtatVide compact icon={Building2} titre="Aucun projet créé." />}
+            {projets.map((pr) => {
+              const n = personnes.filter((p) => p.projet_id === pr.id).length;
+              const actif = selected === pr.id;
+              return (
+                <button key={pr.id} onClick={() => { setSelected(pr.id); setEdition(null); setMessage(null); }}
+                  style={{ textAlign: "left", background: actif ? C.ink : C.surface, color: actif ? "#fff" : C.text, border: `1px solid ${actif ? C.ink : C.border}`, borderRadius: 10, padding: "12px 14px", opacity: pr.actif ? 1 : 0.6 }}>
+                  <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{pr.nom}</span>
+                    {!pr.actif && <span style={{ fontSize: 10, fontWeight: 600, color: actif ? C.lavande : C.mutedSoft }}>désactivé</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: actif ? "#A9AED6" : C.muted, marginTop: 2 }}>{n} personne{n !== 1 ? "s" : ""}</div>
+                </button>
+              );
+            })}
+            {sansProjet.length > 0 && (
+              <div style={{ background: C.amberSoft, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.ink }}>
+                <strong>{sansProjet.length} sans projet</strong>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{sansProjet.slice(0, 4).map((p) => p.nom).join(", ")}{sansProjet.length > 4 ? "…" : ""}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div>
+          {!current ? (
+            <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 40, textAlign: "center", color: C.muted, fontSize: 13 }}>
+              Créez un projet ou sélectionnez-en un pour y affecter des agents.
+            </div>
+          ) : (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20 }}>
+              <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+                {edition === null ? (
+                  <>
+                    <h3 className="disp" style={{ fontSize: 16, fontWeight: 700 }}>{current.nom}</h3>
+                    <button onClick={() => setEdition(current.nom)} title="Renommer" style={{ background: "none", border: "none", padding: 2 }}>
+                      <ListChecks size={13} color={C.mutedSoft} />
+                    </button>
+                    <span style={{ flex: 1 }} />
+                    <button onClick={() => modifierProjet(current.id, null, !current.actif)} disabled={enCours}
+                      style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11.5, color: C.text }}>
+                      {current.actif ? "Désactiver le projet" : "Réactiver le projet"}
+                    </button>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2" style={{ flex: 1 }}>
+                    <input value={edition} onChange={(e) => setEdition(e.target.value)} autoFocus
+                      style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 9px", fontSize: 13.5, fontWeight: 600 }} />
+                    <button onClick={() => modifierProjet(current.id, edition, null)} disabled={enCours || !edition.trim()}
+                      style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 10px" }}>
+                      {enCours ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                    </button>
+                    <button onClick={() => setEdition(null)} style={{ background: "none", border: "none", color: C.mutedSoft, padding: 4 }}><X size={14} /></button>
+                  </div>
+                )}
+              </div>
+              <p style={{ fontSize: 11, color: C.mutedSoft, marginTop: 4 }}>
+                {current.actif
+                  ? "Passer un agent d'un projet à l'autre est une migration, pas une sortie : Zénith la voit dès aujourd'hui."
+                  : "Projet désactivé : on ne peut plus y affecter personne. Ses membres gardent leur rattachement."}
+              </p>
+
+              {current.actif && (
+                <div className="flex items-center gap-2" style={{ marginTop: 16, flexWrap: "wrap" }}>
+                  <select value="" disabled={enCours} aria-label="Ajouter une personne au projet"
+                    onChange={(e) => { const id = e.target.value; if (id) affecter([id], current.id); }}
+                    style={{ flex: 1, minWidth: 220, maxWidth: 320, border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 9px", fontSize: 12.5, background: C.surface }}>
+                    <option value="">+ Ajouter une personne…</option>
+                    {autres.map((p) => (
+                      <option key={p.id} value={p.id}>{p.nom}{p.projet_id ? ` (${nomProjet(p.projet_id)})` : " (sans projet)"}</option>
+                    ))}
+                  </select>
+                  <select value="" disabled={enCours} aria-label="Affecter toute une équipe au projet"
+                    onChange={(e) => {
+                      const eqId = e.target.value; if (!eqId) return;
+                      const ids = personnes.filter((p) => p.equipe_id === eqId && p.projet_id !== current.id).map((p) => p.id);
+                      affecter(ids, current.id, (n) => `${n} personne${n > 1 ? "s" : ""} de ${nomEquipe(eqId)} affectée${n > 1 ? "s" : ""} à ${current.nom}.`);
+                    }}
+                    style={{ flex: 1, minWidth: 220, maxWidth: 320, border: `1px solid ${C.border}`, borderRadius: 7, padding: "7px 9px", fontSize: 12.5, background: C.surface }}>
+                    <option value="">+ Affecter toute une équipe…</option>
+                    {equipesAvecMonde.map((e) => <option key={e.id} value={e.id}>{e.nom}</option>)}
+                  </select>
+                  {enCours && <Loader2 size={13} className="animate-spin" color={C.muted} />}
+                </div>
+              )}
+              {message && <p aria-live="polite" style={{ fontSize: 12, color: C.green, fontWeight: 600, marginTop: 8 }}>{message}</p>}
+
+              <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px dashed ${C.border}` }}>
+                <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 11.5, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  <Users size={13} /> Personnes du projet ({membres.length})
+                </div>
+                {membres.length === 0 ? (
+                  <EtatVide compact icon={Users} titre="Personne dans ce projet pour le moment." detail="Ajoutez des personnes une à une, ou toute une équipe d'un coup." />
+                ) : (
+                  [...new Set(membres.map((m) => m.equipe_id || ""))].sort((a, b) => (nomEquipe(a) || "~").localeCompare(nomEquipe(b) || "~")).map((eqId) => (
+                    <div key={eqId || "sans"} style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, color: C.mutedSoft, fontWeight: 600, marginBottom: 6 }}>{nomEquipe(eqId) || "Sans équipe"}</div>
+                      <div className="flex flex-wrap gap-2">
+                        {membres.filter((m) => (m.equipe_id || "") === eqId).map((m) => (
+                          <span key={m.id} className="flex items-center gap-2" style={{ background: C.canvas, borderRadius: 999, padding: "6px 6px 6px 12px", fontSize: 12.5 }}>
+                            {m.nom}{m.role === "coach" && <span style={{ fontSize: 10, color: C.mutedSoft, fontWeight: 600 }}>coach</span>}
+                            <button onClick={() => affecter([m.id], null)} disabled={enCours} title="Retirer du projet" style={{ background: "none", border: "none", padding: 3 }}>
+                              <X size={11} color={C.mutedSoft} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
             </div>
@@ -8723,8 +8960,8 @@ function UsersPanel({ accessToken, isSuperAdmin }) {
       {changingRoleId && (() => {
         const cible = comptes.find((c) => c.id === changingRoleId);
         if (!cible) return null;
-        const roleLabelMap = { agent: "Agent", coach: "Coach", superviseur: "Superviseur", admin: "Admin", super_admin: "Super Admin" };
-        const rolesPossibles = ["agent", "coach", "superviseur", "admin", "super_admin"].filter((r) => r !== cible.role);
+        const roleLabelMap = { agent: "Agent", coach: "Coach", superviseur: "Superviseur", admin: "Admin", super_admin: "Super Admin", direction: "Direction (lecture seule)" };
+        const rolesPossibles = ["agent", "coach", "superviseur", "admin", "super_admin", "direction"].filter((r) => r !== cible.role);
         return (
           <div style={{ background: C.surface, border: `1.5px solid ${C.ink}`, borderRadius: 12, padding: 18, marginTop: 20, maxWidth: 480 }}>
             <div className="flex items-center justify-between mb-3">
